@@ -81,11 +81,7 @@ impl LanguageServer for KotoServer {
                 })),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
-                    resolve_provider: Some(false),
-                    trigger_characters: Some(vec![".".to_string()]),
-                    work_done_progress_options: WorkDoneProgressOptions::default(),
-                    all_commit_characters: None,
-                    completion_item: None,
+                    ..Default::default()
                 }),
                 ..default()
             },
@@ -369,7 +365,6 @@ impl LanguageServer for KotoServer {
         };
 
         let uri_arc = Arc::new(uri);
-        // Regular completion
         let location = crate::source_info::Location {
             uri: uri_arc,
             range: Range::new(position, position),
