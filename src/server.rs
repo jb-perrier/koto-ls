@@ -381,21 +381,7 @@ impl LanguageServer for KotoServer {
                     ..Default::default()
                 }),
                 kind: Some(symbol_kind_to_completion_kind(def.kind)),
-                detail: None,
-                documentation: None,
-                deprecated: None,
-                preselect: None,
-                sort_text: None,
-                filter_text: None,
-                insert_text: None,
-                insert_text_format: None,
-                insert_text_mode: None,
-                text_edit: None,
-                additional_text_edits: None,
-                command: None,
-                commit_characters: None,
-                data: None,
-                tags: None,
+                ..Default::default()
             })
             .collect();
 
