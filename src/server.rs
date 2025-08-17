@@ -1,6 +1,6 @@
 use crate::info_cache::InfoCache;
 use crate::source_info::SourceInfo;
-use crate::utils::{default, koto_span_to_lsp_range};
+use crate::utils::{default, koto_span_to_lsp_range, symbol_kind_to_completion_kind};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -80,6 +80,13 @@ impl LanguageServer for KotoServer {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 })),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(false),
+                    trigger_characters: Some(vec![".".to_string()]),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                    all_commit_characters: None,
+                    completion_item: None,
+                }),
                 ..default()
             },
         })
@@ -351,5 +358,52 @@ impl LanguageServer for KotoServer {
         } else {
             Err(Error::invalid_params("No source info for file"))
         }
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let Some(info) = self.source_info.lock().await.get(&uri) else {
+            return Ok(None);
+        };
+
+        let uri_arc = Arc::new(uri);
+        // Regular completion
+        let location = crate::source_info::Location {
+            uri: uri_arc,
+            range: Range::new(position, position),
+        };
+
+        let available_definitions = info.get_available_definitions_at_location(location);
+
+        let completion_items: Vec<CompletionItem> = available_definitions
+            .iter()
+            .map(|def| CompletionItem {
+                label: def.id.as_str().to_string(),
+                label_details: Some(CompletionItemLabelDetails {
+                    description: Some(format!("{:?}", def.kind)),
+                    ..Default::default()
+                }),
+                kind: Some(symbol_kind_to_completion_kind(def.kind)),
+                detail: None,
+                documentation: None,
+                deprecated: None,
+                preselect: None,
+                sort_text: None,
+                filter_text: None,
+                insert_text: None,
+                insert_text_format: None,
+                insert_text_mode: None,
+                text_edit: None,
+                additional_text_edits: None,
+                command: None,
+                commit_characters: None,
+                data: None,
+                tags: None,
+            })
+            .collect();
+
+        Ok(Some(CompletionResponse::Array(completion_items)))
     }
 }

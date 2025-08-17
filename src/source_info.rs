@@ -33,15 +33,32 @@ impl Error {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScopeId(usize);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Scope {
+    pub location: Location,
+    pub parent: Option<ScopeId>,
+}
+
+impl Scope {
+    pub fn new_with_parent(location: Location, parent: Option<ScopeId>) -> Self {
+        Self { location, parent }
+    }
+}
+
 /// Analyzed information about the contents of a source file
 #[derive(Clone, Debug, Default)]
 pub struct SourceInfo {
     // The source file's contents
     source: String,
     // A vec of all definitions, sorted by start position
-    definitions: Vec<Definition>,
+    pub definitions: Vec<Definition>,
     // A vec of all references, sorted by start position
     references: Vec<Reference>,
+    /// A vec of all scopes, sorted by start position
+    pub scopes: Vec<Scope>,
     /// If an error was encountered while compiling the script it's cached here
     pub error: Option<Error>,
 }
@@ -64,11 +81,10 @@ impl SourceInfo {
                 }
             }
         };
-        if error.is_none() {
-            if let Err(compile_error) = Compiler::compile_ast(ast.clone(), None, default()) {
+        if error.is_none()
+            && let Err(compile_error) = Compiler::compile_ast(ast.clone(), None, default()) {
                 error = Some(compile_error.into())
             }
-        }
         SourceInfoBuilder::from_ast(&ast, script, uri, info_cache).build(error)
     }
 
@@ -116,10 +132,10 @@ impl SourceInfo {
     }
 
     pub fn find_references(
-        &self,
+        &'_ self,
         position: Position,
         include_definition: bool,
-    ) -> Option<FindReferencesIter> {
+    ) -> Option<FindReferencesIter<'_>> {
         self.get_definition_location(position)
             .map(|definition| FindReferencesIter {
                 definition,
@@ -132,6 +148,52 @@ impl SourceInfo {
         self.definitions
             .iter()
             .filter(|definition| definition.top_level)
+    }
+
+    pub fn get_available_definitions_at_location(&self, location: Location) -> Vec<Definition> {
+        let mut available_definitions = Vec::new();
+        let mut seen_definitions = std::collections::HashSet::new();
+        
+        // Find all scopes that contain this location
+        let mut containing_scopes = Vec::new();
+        for (scope_idx, scope) in self.scopes.iter().enumerate() {
+            if scope.location.range.start <= location.range.start
+                && scope.location.range.end >= location.range.end
+            {
+                containing_scopes.push((scope_idx, scope));
+            }
+        }
+        
+        
+        // Add definitions from all containing scopes (innermost first)
+        for (scope_idx, _) in containing_scopes {
+            let scope_id = ScopeId(scope_idx);
+            for def in &self.definitions {
+                if def.scope_id == scope_id {
+                    let key = (def.id.as_str(), def.location.range.start.line, def.location.range.start.character);
+                    if seen_definitions.insert(key) {
+                        available_definitions.push(def.clone());
+                    }
+                }
+            }
+        }
+        
+        // Also add all top-level definitions
+        for def in &self.definitions {
+            if def.top_level {
+                let key = (def.id.as_str(), def.location.range.start.line, def.location.range.start.character);
+                if seen_definitions.insert(key) {
+                    available_definitions.push(def.clone());
+                }
+            }
+        }
+
+        // Remove all definitions that are after the current location
+        available_definitions.retain(|def| {
+            cmp_range_to_position(&def.location.range, location.range.start) != Ordering::Greater
+        });
+
+        available_definitions
     }
 }
 
@@ -207,12 +269,13 @@ fn cmp_range_to_range(range_lhs: &Range, range_rhs: Range) -> Ordering {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Definition {
-    location: Location,
+    pub location: Location,
     pub id: StringSlice<usize>,
     pub kind: SymbolKind,
     // true for definitions at the top-level of the script, i.e. not in a function
-    top_level: bool,
-    children: Option<Vec<Definition>>,
+    pub top_level: bool,
+    pub children: Option<Vec<Definition>>,
+    pub scope_id: ScopeId,
 }
 
 impl Definition {
@@ -222,6 +285,7 @@ impl Definition {
         kind: SymbolKind,
         top_level: bool,
         children: Vec<Definition>,
+        scope_id: ScopeId,
     ) -> Self {
         Self {
             location,
@@ -233,6 +297,7 @@ impl Definition {
             } else {
                 Some(children)
             },
+            scope_id,
         }
     }
 }
@@ -284,6 +349,8 @@ struct SourceInfoBuilder<'i> {
     // All references that have been found in the file.
     // The references get added as soon as they're encountered in the AST, so they're always sorted.
     references: Vec<Reference>,
+    // All scopes that have been found in the file.
+    scopes: Vec<Scope>,
 }
 
 impl<'i> SourceInfoBuilder<'i> {
@@ -295,6 +362,7 @@ impl<'i> SourceInfoBuilder<'i> {
             frames: Vec::new(),
             definitions: Vec::new(),
             references: Vec::new(),
+            scopes: Vec::new(),
         };
 
         if let Some(entry_point) = ast.entry_point() {
@@ -320,6 +388,7 @@ impl<'i> SourceInfoBuilder<'i> {
             definitions: self.definitions,
             references: self.references,
             error,
+            scopes: self.scopes,
         }
     }
 
@@ -394,12 +463,12 @@ impl<'i> SourceInfoBuilder<'i> {
             }
             Node::Map { entries, .. } => child_definitions = self.visit_map(entries, &ctx),
             Node::MainBlock { body, local_count } => {
-                self.push_frame(*local_count);
+                self.push_frame(*local_count, ctx.ast, node);
                 self.visit_nested(body, ctx.default());
                 self.pop_frame();
             }
             Node::Function(info) => {
-                self.push_frame(info.local_count);
+                self.push_frame(info.local_count, ctx.ast, node);
                 self.visit_node(info.args, ctx.default());
                 self.visit_node(info.body, ctx.default());
                 self.pop_frame();
@@ -474,8 +543,8 @@ impl<'i> SourceInfoBuilder<'i> {
                 self.visit_node(*expression, ctx.default());
             }
             Node::PackedId(maybe_id) => {
-                if let Some(id) = maybe_id {
-                    if ctx.id_is_definition {
+                if let Some(id) = maybe_id
+                    && ctx.id_is_definition {
                         self.add_definition(
                             ctx.string(*id),
                             SymbolKind::VARIABLE,
@@ -484,7 +553,6 @@ impl<'i> SourceInfoBuilder<'i> {
                             ctx.ast,
                         );
                     }
-                }
             }
             Node::For(info) => {
                 self.visit_nested(&info.args, ctx.with_ids_as_definitions());
@@ -528,7 +596,7 @@ impl<'i> SourceInfoBuilder<'i> {
             };
 
             match &key_node.node {
-                Node::Str(s) => self.visit_string(&s, ctx.default()),
+                Node::Str(s) => self.visit_string(s, ctx.default()),
                 Node::Id(id, _type_hint) => {
                     // Shorthand syntax?
                     if value.is_none() {
@@ -552,6 +620,7 @@ impl<'i> SourceInfoBuilder<'i> {
                             SymbolKind::FIELD,
                             self.frames.len() == 1, // TODO - use frame.is_top_level?
                             vec![],                 // TODO - nested child definitions?
+                            ScopeId(self.scopes.len() - 1),  // Use the current scope id
                         ))
                     }
                 }
@@ -566,6 +635,7 @@ impl<'i> SourceInfoBuilder<'i> {
                         SymbolKind::FIELD,
                         self.frames.len() == 1, // TODO - use frame.is_top_level?
                         vec![],                 // TODO - nested child definitions?
+                        ScopeId(self.scopes.len() - 1),  // Use the current scope id
                     ))
                 }
                 _ => {}
@@ -885,9 +955,7 @@ impl<'i> SourceInfoBuilder<'i> {
             let Ok(path) = koto_bytecode::find_module(name, script_path) else {
                 return None;
             };
-            let Some(url) = Uri::from_file_path(path) else {
-                return None;
-            };
+            let url = Uri::from_file_path(path)?;
             Some(Arc::new(url))
         } else {
             None
@@ -898,11 +966,17 @@ impl<'i> SourceInfoBuilder<'i> {
         self.frames.last_mut().expect("Missing frame")
     }
 
-    fn push_frame(&mut self, locals_capacity: usize) {
+    fn push_frame(&mut self, locals_capacity: usize, ast: &Ast, node: &AstNode) {
+        let span = ast.span(node.span);
+        let uri = self.uri.clone();
+        let parent = self.frames.last().map(|frame| frame.scope_id);
+        self.scopes.push(Scope::new_with_parent(Location::new(uri, *span), parent));
+
         self.frames.push(Frame {
             definitions: Vec::with_capacity(locals_capacity),
             imported_definitions: Vec::new(),
             top_level: self.frames.is_empty(),
+            scope_id: ScopeId(self.scopes.len() - 1),
         });
     }
 
@@ -912,11 +986,12 @@ impl<'i> SourceInfoBuilder<'i> {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct Frame {
     definitions: Vec<Definition>,
     imported_definitions: Vec<Definition>,
     top_level: bool,
+    scope_id: ScopeId,
 }
 
 impl Frame {
@@ -933,6 +1008,7 @@ impl Frame {
             kind,
             self.top_level,
             children,
+            self.scope_id
         ));
     }
 
@@ -1047,8 +1123,7 @@ mod test {
                     }
                     (None, None) => {}
                     _ => panic!(
-                        "mismatch in case {i}: expected: {:?}, actual: {:?}",
-                        expected, result
+                        "mismatch in case {i}: expected: {expected:?}, actual: {result:?}"
                     ),
                 }
             }
