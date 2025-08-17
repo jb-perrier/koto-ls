@@ -372,7 +372,7 @@ impl LanguageServer for KotoServer {
 
         let available_definitions = info.get_available_definitions_at_location(location);
 
-        let completion_items: Vec<CompletionItem> = available_definitions
+        let mut completion_items: Vec<CompletionItem> = available_definitions
             .iter()
             .map(|def| CompletionItem {
                 label: def.id.as_str().to_string(),
@@ -398,6 +398,14 @@ impl LanguageServer for KotoServer {
                 tags: None,
             })
             .collect();
+
+        // Tell the client how to sort them, by default it will sort them alphabetically
+        // we want to keep the actual order (from deepest scope to top-level)
+        let item_count = completion_items.len();
+        for (i, item) in completion_items.iter_mut().enumerate().rev() {
+            let sort_pos = item_count - i - 1;
+            item.sort_text = Some(format!("{sort_pos:07}"));
+        }
 
         Ok(Some(CompletionResponse::Array(completion_items)))
     }

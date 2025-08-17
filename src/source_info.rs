@@ -193,6 +193,10 @@ impl SourceInfo {
             cmp_range_to_position(&def.location.range, location.range.start) != Ordering::Greater
         });
 
+        // Sort available_definitions by distance to the current location
+        available_definitions.sort_by_key(|def| {
+            def.location.range.start
+        });
         available_definitions
     }
 }
