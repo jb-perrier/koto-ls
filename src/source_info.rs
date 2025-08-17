@@ -164,7 +164,6 @@ impl SourceInfo {
             }
         }
         
-        
         // Add definitions from all containing scopes (innermost first)
         for (scope_idx, _) in containing_scopes {
             let scope_id = ScopeId(scope_idx);
