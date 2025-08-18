@@ -256,31 +256,6 @@ impl LanguageServer for KotoServer {
         Ok(result)
     }
 
-    // async fn references_old(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-    //     let uri = params.text_document_position.text_document.uri;
-    //     let position = params.text_document_position.position;
-    //     let include_declaration = params.context.include_declaration;
-
-    //     let Some(info) = self.source_info.lock().await.get(&uri) else {
-    //         self.client
-    //             .log_message(MessageType::ERROR, "No references found")
-    //             .await;
-    //         return Err(Error::invalid_params("No source information available"));
-    //     };
-
-    //     let result = info
-    //         .find_references(position, include_declaration)
-    //         .map(|references| references.map(Location::from).collect());
-
-    //     if result.is_none() {
-    //         self.client
-    //             .log_message(MessageType::INFO, "No references found")
-    //             .await;
-    //     }
-
-    //     Ok(result)
-    // }
-
     async fn document_highlight(
         &self,
         params: DocumentHighlightParams,
