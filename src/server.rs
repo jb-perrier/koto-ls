@@ -176,21 +176,30 @@ impl LanguageServer for KotoServer {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let result = self
-            .source_info
-            .lock()
-            .await
-            .get(&uri)
-            .and_then(|info| info.get_definition_location(position))
-            .map(|definition| GotoDefinitionResponse::Scalar(definition.into()));
 
-        if result.is_none() {
+        let Some(info) = self.source_info.lock().await.get(&uri) else {
             self.client
-                .log_message(MessageType::INFO, "No definition found")
+                .log_message(
+                    MessageType::INFO,
+                    "Goto-Definition:: Unable to lock source information",
+                )
                 .await;
-        }
+            return Ok(None);
+        };
 
-        Ok(result)
+        let Some(location) = info.get_definition_location(position) else {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Goto-Definition:: Cannot find definition at {position:?}"),
+                )
+                .await;
+            return Ok(None);
+        };
+
+        Ok(Some(GotoDefinitionResponse::Scalar(
+            location.clone().into(),
+        )))
     }
 
     async fn document_symbol(
@@ -198,13 +207,23 @@ impl LanguageServer for KotoServer {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
-        let result = self.source_info.lock().await.get(&uri).map(|info| {
-            let definitions = info
-                .top_level_definitions()
-                .map(DocumentSymbol::from)
-                .collect();
-            DocumentSymbolResponse::Nested(definitions)
-        });
+        let Some(info) = self.source_info.lock().await.get(&uri) else {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    "Document-Symbol: Unable to lock source information",
+                )
+                .await;
+            return Ok(None);
+        };
+
+        let result = match info.top_level_definitions() {
+            Some(definitions) => {
+                let definitions = definitions.map(DocumentSymbol::from).collect();
+                Some(DocumentSymbolResponse::Nested(definitions))
+            }
+            _ => None,
+        };
 
         Ok(result)
     }
@@ -216,9 +235,12 @@ impl LanguageServer for KotoServer {
 
         let Some(info) = self.source_info.lock().await.get(&uri) else {
             self.client
-                .log_message(MessageType::ERROR, "No references found")
+                .log_message(
+                    MessageType::INFO,
+                    "References: Unable to lock source information",
+                )
                 .await;
-            return Err(Error::invalid_params("No source information available"));
+            return Ok(None);
         };
 
         let result = info
@@ -233,6 +255,31 @@ impl LanguageServer for KotoServer {
 
         Ok(result)
     }
+
+    // async fn references_old(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+    //     let uri = params.text_document_position.text_document.uri;
+    //     let position = params.text_document_position.position;
+    //     let include_declaration = params.context.include_declaration;
+
+    //     let Some(info) = self.source_info.lock().await.get(&uri) else {
+    //         self.client
+    //             .log_message(MessageType::ERROR, "No references found")
+    //             .await;
+    //         return Err(Error::invalid_params("No source information available"));
+    //     };
+
+    //     let result = info
+    //         .find_references(position, include_declaration)
+    //         .map(|references| references.map(Location::from).collect());
+
+    //     if result.is_none() {
+    //         self.client
+    //             .log_message(MessageType::INFO, "No references found")
+    //             .await;
+    //     }
+
+    //     Ok(result)
+    // }
 
     async fn document_highlight(
         &self,
