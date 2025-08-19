@@ -181,12 +181,6 @@ x = 42
     let location = location_at_position(test_uri(), 0, 6); // After "x = 42"
     let completions = info.get_available_definitions_at_location(location);
 
-    // Should have the x definition available
-    println!("Got {} completions:", completions.len());
-    for completion in &completions {
-        println!("  - {}", completion.id.as_str());
-    }
-
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].id.as_str(), "x");
 }
