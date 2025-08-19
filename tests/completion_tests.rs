@@ -34,7 +34,7 @@ x +
     let mut info_cache = InfoCache::default();
     let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
 
-    let location = location_at_position(test_uri(), 3, 4); // After "x + "
+    let location = location_at_position(test_uri(), 3, 3); // After "x + "
     let completions = info.get_available_definitions_at_location(location);
 
     assert_eq!(completions.len(), 3);
@@ -203,7 +203,7 @@ f = |x|
     let mut info_cache = InfoCache::default();
     let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
 
-    let location = location_at_position(test_uri(), 3, 4); // After "x + "
+    let location = location_at_position(test_uri(), 3, 5); // After "x + "
     let completions = info.get_available_definitions_at_location(location);
 
     let names: Vec<String> = completions
@@ -228,13 +228,13 @@ fn test_completion_with_imports() {
 import foo
 from bar import baz
 local_var = 1
-foo + baz + 
+foo + baz +
 ";
 
     let mut info_cache = InfoCache::default();
     let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
 
-    let location = location_at_position(test_uri(), 3, 12); // After "foo + baz + "
+    let location = location_at_position(test_uri(), 3, 11); // After "foo + baz + "
     let completions = info.get_available_definitions_at_location(location);
 
     let names: Vec<String> = completions

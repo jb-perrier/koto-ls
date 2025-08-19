@@ -78,22 +78,16 @@ impl SourceInfo {
         &self.source
     }
 
-    pub fn get_definition_from_location(&self, location: Location) -> Option<Definition> {
+    pub fn get_definition_from_location(&self, location: Location) -> Option<&Definition> {
         self.definitions
-            .binary_search_by(|definition| {
-                cmp_range_to_range(&definition.location.range, location.range)
-            })
-            .ok()
-            .map(|i| self.definitions[i].clone())
+            .iter()
+            .find(|definition| definition.location == location)
     }
 
-    pub fn get_definition_from_position(&self, position: Position) -> Option<Definition> {
+    pub fn get_definition_from_position(&self, position: Position) -> Option<&Definition> {
         self.definitions
-            .binary_search_by(|definition| {
-                cmp_range_to_position(&definition.location.range, position)
-            })
-            .ok()
-            .and_then(|i| self.get_definition_from_location(self.definitions[i].location.clone()))
+            .iter()
+            .find(|definition| is_position_in_range(&definition.location.range, position))
     }
 
     pub fn get_referenced_definition_location(&self, position: Position) -> Option<Location> {
