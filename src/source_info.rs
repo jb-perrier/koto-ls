@@ -40,6 +40,8 @@ pub struct SourceInfo {
     source: String,
     // A vec of all definitions, sorted by start position
     pub definitions: Vec<Definition>,
+    // All imported definitions from other files.
+    pub imported_definitions: Vec<Definition>,
     // A vec of all references, sorted by start position
     pub references: Vec<Reference>,
     /// A vec of all frames, sorted by start position
@@ -120,20 +122,11 @@ impl SourceInfo {
             })
     }
 
-    pub fn top_level_frame(&self) -> Option<FrameId> {
-        self.frames
+    pub fn top_level_definitions(&self) -> impl Iterator<Item = &Definition> {
+        let top_frame = FrameId(0);
+        self.definitions
             .iter()
-            .find(|frame| frame.parent.is_none())
-            .map(|frame| frame.id)
-    }
-
-    pub fn top_level_definitions(&self) -> Option<impl Iterator<Item = &Definition>> {
-        let top_frame = self.top_level_frame()?;
-        Some(
-            self.definitions
-                .iter()
-                .filter(move |definition| definition.frame_id == top_frame),
-        )
+            .filter(move |definition| definition.frame_id == top_frame)
     }
 
     pub fn get_available_definitions_at_location(&self, location: Location) -> Vec<Definition> {
@@ -153,7 +146,8 @@ impl SourceInfo {
         // Add definitions from all containing scopes (innermost first)
         for (frame_idx, _) in containing_frames {
             let frame_id = frame_idx.into();
-            for def in &self.definitions {
+            let defs_iterator = self.definitions.iter().chain(self.imported_definitions.iter());
+            for def in defs_iterator {
                 if def.frame_id == frame_id {
                     let key = (
                         def.id.as_str(),
@@ -406,8 +400,12 @@ impl<'i> SourceInfoBuilder<'i> {
         let mut current_frame_id = Some(frame_id);
         while let Some(fid) = current_frame_id {
             // Search definitions in the current scope
-            for definition in self.definitions.iter().rev()
-            .chain(self.imported_definitions.iter()) {
+            for definition in self
+                .definitions
+                .iter()
+                .rev()
+                .chain(self.imported_definitions.iter())
+            {
                 let ordering = cmp_range_to_range(&definition.location.range, location.range);
                 if definition.frame_id == fid
                     && definition.id.as_str() == id
@@ -442,17 +440,12 @@ impl<'i> SourceInfoBuilder<'i> {
     }
 
     fn build(mut self, error: Option<Error>) -> SourceInfo {
-        // References should already be sorted
-        debug_assert!(is_sorted::IsSorted::is_sorted_by_key(
-            &mut self.references.iter(),
-            |reference| reference.location.range.start
-        ));
-
         // Resolve unresolved references
         self.resolve_references();
 
         SourceInfo {
             source: self.script,
+            imported_definitions: self.imported_definitions,
             definitions: self.definitions,
             references: self.references,
             error,
@@ -743,9 +736,9 @@ impl<'i> SourceInfoBuilder<'i> {
                             }
                         }
                     } else if let Some(module) = &maybe_module {
-                        if let Some(mut definitions) = module.top_level_definitions()
-                            && let Some(definition) =
-                                definitions.find(|definition| definition.id == id_string)
+                        if let Some(definition) = module
+                            .top_level_definitions()
+                            .find(|definition| definition.id == id_string)
                         {
                             // Add a reference here to enable go-to-definition
                             self.add_reference_with_definition(
@@ -780,9 +773,9 @@ impl<'i> SourceInfoBuilder<'i> {
                     };
 
                     if let Some(module) = &maybe_module {
-                        if let Some(mut definitions) = module.top_level_definitions()
-                            && let Some(definition) =
-                                definitions.find(|definition| definition.id == id_string)
+                        if let Some(definition) = module
+                            .top_level_definitions()
+                            .find(|definition| definition.id == id_string)
                         {
                             self.add_imported_definition(definition.clone());
                             // Also add a reference here to enable go-to-definition
@@ -1607,7 +1600,7 @@ x = |y| y.baz = bar
         ) -> Result<()> {
             let mut info_cache = InfoCache::default();
             let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
-            let definitions = info.top_level_definitions().unwrap().collect::<Vec<_>>();
+            let definitions = info.top_level_definitions().collect::<Vec<_>>();
 
             for (i, (expected, actual)) in expected_definitions
                 .iter()

@@ -217,15 +217,8 @@ impl LanguageServer for KotoServer {
             return Ok(None);
         };
 
-        let result = match info.top_level_definitions() {
-            Some(definitions) => {
-                let definitions = definitions.map(DocumentSymbol::from).collect();
-                Some(DocumentSymbolResponse::Nested(definitions))
-            }
-            _ => None,
-        };
-
-        Ok(result)
+        let definitions = info.top_level_definitions().map(DocumentSymbol::from).collect();
+        Ok(Some(DocumentSymbolResponse::Nested(definitions)))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
