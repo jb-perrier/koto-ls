@@ -98,22 +98,18 @@ impl SourceInfo {
 
     pub fn get_referenced_definition_location(&self, position: Position) -> Option<Location> {
         self.references
-            .binary_search_by(|reference| {
-                cmp_range_to_position(&reference.location.range, position)
-            })
-            .ok()
-            .map(|i| self.references[i].definition.clone())
+            .iter()
+            .find(|reference| is_position_in_range(&reference.location.range, position))
+            .map(|reference| reference.definition.clone())
     }
 
     pub fn get_definition_location(&self, position: Position) -> Option<Location> {
         self.get_referenced_definition_location(position)
             .or_else(|| {
                 self.definitions
-                    .binary_search_by(|definition| {
-                        cmp_range_to_position(&definition.location.range, position)
-                    })
-                    .ok()
-                    .map(|i| self.definitions[i].location.clone())
+                    .iter()
+                    .find(|definition| is_position_in_range(&definition.location.range, position))
+                    .map(|definition| definition.location.clone())
             })
     }
 
@@ -238,17 +234,21 @@ impl Iterator for FindReferencesIter<'_> {
     }
 }
 
+pub fn is_position_in_range(range: &Range, position: Position) -> bool {
+    range.start <= position && position <= range.end
+}
+
 pub fn cmp_range_to_position(range: &Range, position: Position) -> Ordering {
     if range.start > position {
         Ordering::Greater
-    } else if range.end < position {
+    } else if range.end <= position {
         Ordering::Less
     } else {
         Ordering::Equal
     }
 }
 
-fn cmp_range_to_range(range_lhs: &Range, range_rhs: Range) -> Ordering {
+pub fn cmp_range_to_range(range_lhs: &Range, range_rhs: Range) -> Ordering {
     if range_lhs.start < range_rhs.start {
         Ordering::Less
     } else if range_lhs.end > range_rhs.end {
@@ -403,16 +403,20 @@ impl<'i> SourceInfoBuilder<'i> {
         result
     }
 
-    fn find_definition_from_frame(&self, id: &str, frame_id: FrameId) -> Option<&Definition> {
-        let frame = self.frames.get(frame_id.0)?;
+    fn get_definition_from_frame(
+        &self,
+        id: &str,
+        frame_id: FrameId,
+        location: &Location,
+    ) -> Option<&Definition> {
         let mut current_frame_id = Some(frame_id);
         while let Some(fid) = current_frame_id {
             // Search definitions in the current scope
             for definition in self.definitions.iter().rev() {
+                let ordering = cmp_range_to_range(&definition.location.range, location.range);
                 if definition.frame_id == fid
                     && definition.id.as_str() == id
-                    && cmp_range_to_range(&definition.location.range, frame.location.range)
-                        == Ordering::Less
+                    && (ordering == Ordering::Equal || ordering == Ordering::Less)
                 {
                     return Some(definition);
                 }
@@ -426,8 +430,9 @@ impl<'i> SourceInfoBuilder<'i> {
     fn resolve_references(&mut self) {
         for unresolved in &self.unresolved_references {
             let id = unresolved.id.as_str();
-            let scope_id = unresolved.frame_id;
-            let Some(def) = self.find_definition_from_frame(id, scope_id) else {
+            let frame_id = unresolved.frame_id;
+            let Some(def) = self.get_definition_from_frame(id, frame_id, &unresolved.location)
+            else {
                 // Definition not found
                 continue;
             };
@@ -442,10 +447,6 @@ impl<'i> SourceInfoBuilder<'i> {
     }
 
     fn build(mut self, error: Option<Error>) -> SourceInfo {
-        // Sort the definitions, they get added in pop_frame so they aren't in order
-        self.definitions
-            .sort_by_key(|definition| definition.location.range.start);
-
         // References should already be sorted
         debug_assert!(is_sorted::IsSorted::is_sorted_by_key(
             &mut self.references.iter(),
@@ -691,8 +692,8 @@ impl<'i> SourceInfoBuilder<'i> {
                             ctx.string(*id),
                             Location::new(self.uri.clone(), *ctx.ast.span(key_node.span)),
                             SymbolKind::FIELD,
-                            vec![], // TODO - nested child definitions?
-                            FrameId(self.frame_stack.len() - 1), // Use the current frame id
+                            vec![],               // TODO - nested child definitions?
+                            self.current_frame(), // Use the current frame id
                         ))
                     }
                 }
@@ -705,8 +706,8 @@ impl<'i> SourceInfoBuilder<'i> {
                         field_id.into(),
                         Location::new(self.uri.clone(), *ctx.ast.span(key_node.span)),
                         SymbolKind::FIELD,
-                        vec![], // TODO - nested child definitions?
-                        FrameId(self.frame_stack.len() - 1), // Use the current frame id
+                        vec![],               // TODO - nested child definitions?
+                        self.current_frame(), // Use the current frame id
                     ))
                 }
                 _ => {}
@@ -725,12 +726,13 @@ impl<'i> SourceInfoBuilder<'i> {
         // from ...
         for (i, from_index) in from.iter().enumerate() {
             let from_node = ctx.node(*from_index);
+            let location = Location::new(self.uri.clone(), *ctx.ast.span(from_node.span));
             match &from_node.node {
                 Node::Id(id, _type_hint) => {
                     let id_string = ctx.string(*id);
                     if i == 0 {
                         // check for matching definition
-                        if self.get_definition(id_string.as_str()).is_some() {
+                        if self.get_definition(id_string.as_str(), &location).is_some() {
                             // The module name was defined earlier in the script, so add a reference
                             self.add_reference(*id, from_node, ctx.ast);
                         } else if let Some(module_url) = self.find_module(id_string.as_str()) {
@@ -749,14 +751,14 @@ impl<'i> SourceInfoBuilder<'i> {
                         if let Some(mut definitions) = module.top_level_definitions()
                             && let Some(definition) =
                                 definitions.find(|definition| definition.id == id_string)
-                            {
-                                // Add a reference here to enable go-to-definition
-                                self.add_reference_with_definition(
-                                    id_string,
-                                    *ctx.span(from_node),
-                                    definition.location.clone(),
-                                );
-                            }
+                        {
+                            // Add a reference here to enable go-to-definition
+                            self.add_reference_with_definition(
+                                id_string,
+                                *ctx.span(from_node),
+                                definition.location.clone(),
+                            );
+                        }
                         maybe_module = None;
                     }
                 }
@@ -768,6 +770,7 @@ impl<'i> SourceInfoBuilder<'i> {
         // import ...
         for item in items.iter() {
             let item_node = ctx.node(item.item);
+            let location = Location::new(self.uri.clone(), *ctx.ast.span(item_node.span));
             match (&item_node.node, item.name) {
                 (Node::Id(id, _), maybe_as) => {
                     let id_string = ctx.string(*id);
@@ -785,38 +788,41 @@ impl<'i> SourceInfoBuilder<'i> {
                         if let Some(mut definitions) = module.top_level_definitions()
                             && let Some(definition) =
                                 definitions.find(|definition| definition.id == id_string)
-                            {
-                                self.add_imported_definition(definition.clone());
-                                // Also add a reference here to enable go-to-definition
+                        {
+                            self.add_imported_definition(definition.clone());
+                            // Also add a reference here to enable go-to-definition
+                            self.add_reference_with_definition(
+                                id_string,
+                                *ctx.span(item_node),
+                                definition.location.clone(),
+                            );
+                            if let (Some(as_node), Some(as_string)) = (as_node, as_string) {
+                                // ...and also a reference for the alias
                                 self.add_reference_with_definition(
-                                    id_string,
-                                    *ctx.span(item_node),
+                                    as_string.clone(),
+                                    *ctx.span(as_node),
                                     definition.location.clone(),
                                 );
-                                if let (Some(as_node), Some(as_string)) = (as_node, as_string) {
-                                    // ...and also a reference for the alias
-                                    self.add_reference_with_definition(
-                                        as_string.clone(),
-                                        *ctx.span(as_node),
-                                        definition.location.clone(),
-                                    );
-                                    // Add a local definition for the alias
-                                    self.add_definition(
-                                        as_string,
-                                        SymbolKind::VARIABLE,
-                                        vec![],
-                                        as_node,
-                                        ctx.ast,
-                                    );
-                                }
-                                continue;
+                                // Add a local definition for the alias
+                                self.add_definition(
+                                    as_string,
+                                    SymbolKind::VARIABLE,
+                                    vec![],
+                                    as_node,
+                                    ctx.ast,
+                                );
                             }
+                            continue;
+                        }
                     } else if from.is_empty() {
                         // `from` wasn't used, so the import item is a module
                         // check for matching definition
                         let module_name = ctx.string(*id);
 
-                        if self.get_definition(module_name.as_str()).is_some() {
+                        if self
+                            .get_definition(module_name.as_str(), &location)
+                            .is_some()
+                        {
                             // The module name was defined earlier in the script, so add a reference
                             self.add_reference(*id, item_node, ctx.ast);
                         } else if let Some(module_url) = self.find_module(module_name.as_str()) {
@@ -967,9 +973,9 @@ impl<'i> SourceInfoBuilder<'i> {
         }
     }
 
-    fn get_definition(&self, id: &str) -> Option<&Definition> {
-        let current_frame = self.frame_stack.last().cloned()?;
-        self.find_definition_from_frame(id, current_frame)
+    fn get_definition(&self, id: &str, location: &Location) -> Option<&Definition> {
+        let current_frame = self.current_frame();
+        self.get_definition_from_frame(id, current_frame, location)
     }
 
     fn add_definition(
@@ -987,7 +993,7 @@ impl<'i> SourceInfoBuilder<'i> {
             Location::new(uri, *span),
             kind,
             children,
-            FrameId(self.frame_stack.len() - 1),
+            self.current_frame(),
         ));
     }
 
@@ -998,8 +1004,9 @@ impl<'i> SourceInfoBuilder<'i> {
     fn add_reference(&mut self, id: ConstantIndex, node: &AstNode, ast: &Ast) {
         let id = ast.constants().get_string_slice(id);
         let span = ast.span(node.span);
+        let location = Location::new(self.uri.clone(), *span);
 
-        let Some(definition) = self.get_definition(id.as_str()) else {
+        let Some(definition) = self.get_definition(id.as_str(), &location) else {
             self.add_unresolved_reference(id, *span);
             return;
         };
@@ -1012,7 +1019,7 @@ impl<'i> SourceInfoBuilder<'i> {
         self.unresolved_references.push(UnresolvedReference {
             location: Location::new(self.uri.clone(), span),
             id,
-            frame_id: FrameId(self.frames.len() - 1),
+            frame_id: self.current_frame(),
         });
     }
 
@@ -1026,8 +1033,16 @@ impl<'i> SourceInfoBuilder<'i> {
             location: Location::new(self.uri.clone(), span),
             definition,
             id,
-            frame_id: FrameId(self.frames.len() - 1),
+            frame_id: self.current_frame(),
         });
+    }
+
+    fn current_frame(&self) -> FrameId {
+        // Should never be empty, keep the expect
+        self.frame_stack
+            .last()
+            .copied()
+            .expect("Missing current frame")
     }
 
     fn find_module(&self, name: &str) -> Option<Arc<Uri>> {
@@ -1051,7 +1066,9 @@ impl<'i> SourceInfoBuilder<'i> {
     fn push_frame(&mut self, locals_capacity: usize, ast: &Ast, node: &AstNode) {
         let span = ast.span(node.span);
         let uri = self.uri.clone();
-        let parent = self.frame_stack.last().cloned();
+        // If top level frame == None
+        let parent = self.frame_stack.last().copied();
+        self.definitions.reserve_exact(locals_capacity);
         self.frames.push(Frame {
             location: Location::new(uri, *span),
             parent,
@@ -1067,7 +1084,7 @@ impl<'i> SourceInfoBuilder<'i> {
     }
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FrameId(usize);
 
 impl From<FrameId> for usize {
@@ -1269,6 +1286,32 @@ f a
                 &[
                     (position(2, 0), Some(range(0, 0, 1))), // f
                     (position(2, 2), Some(range(1, 0, 1))), // a
+                ],
+            )
+        }
+
+        #[test]
+        fn fib() -> Result<()> {
+            let script = r#"fib = |nf|
+    switch
+        nf <= 0 then 0
+        nf == 1 then 1
+        else (fib nf - 1) + (fib nf - 2)"#;
+
+            goto_definition_test(
+                script,
+                &[
+                    // Test fib definition and references
+                    (position(4, 14), Some(range(0, 0, 3))), // fib in (fib nf - 1) -> fib definition
+                    (position(4, 29), Some(range(0, 0, 3))), // fib in (fib nf - 2) -> fib definition
+                    // Test nf parameter definition and references
+                    (position(2, 8), Some(range(0, 7, 2))), // nf in "nf <= 0" -> nf parameter
+                    (position(3, 8), Some(range(0, 7, 2))), // nf in "nf == 1" -> nf parameter
+                    (position(4, 18), Some(range(0, 7, 2))), // nf in "fib nf - 1" -> nf parameter
+                    (position(4, 33), Some(range(0, 7, 2))), // nf in "fib nf - 2" -> nf parameter
+                    // Test that we can't find definition at random positions
+                    (position(1, 4), None),  // switch keyword
+                    (position(2, 12), None), // <= operator
                 ],
             )
         }
@@ -1525,6 +1568,52 @@ x = |y| y.baz = bar
                 )],
             )
         }
+
+            #[test]
+            fn fib_references() -> Result<()> {
+                let script = r#"fib = |nf|
+        switch
+            nf <= 0 then 0
+            nf == 1 then 1
+            else (fib nf - 1) + (fib nf - 2)"#;
+
+                find_references_test(
+                    script,
+                    &[
+                        (
+                            position(0, 0), // fib definition
+                            Some(&[range(4, 18, 3), range(4, 33, 3)]), // two recursive calls
+                            false,
+                        ),
+                        (
+                            position(0, 0), // fib definition (include definition)
+                            Some(&[range(0, 0, 3), range(4, 18, 3), range(4, 33, 3)]),
+                            true,
+                        ),
+                        (
+                            position(0, 7), // nf parameter
+                            Some(&[
+                                range(2, 12, 2),   // nf <= 0
+                                range(3, 12, 2),   // nf == 1
+                                range(4, 22, 2),  // fib nf - 1
+                                range(4, 37, 2),  // fib nf - 2
+                            ]),
+                            false,
+                        ),
+                        (
+                            position(0, 7), // nf parameter (include definition)
+                            Some(&[
+                                range(0, 7, 2),   // parameter definition
+                                range(2, 12, 2),   // nf <= 0
+                                range(3, 12, 2),   // nf == 1
+                                range(4, 22, 2),  // fib nf - 1
+                                range(4, 37, 2),  // fib nf - 2
+                            ]),
+                            true,
+                        ),
+                    ],
+                )
+            }
     }
 
     mod top_level_definitions {

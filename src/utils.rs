@@ -1,5 +1,7 @@
 use tower_lsp_server::lsp_types::{CompletionItemKind, Position, Range, SymbolKind};
 
+use crate::source_info::SourceInfo;
+
 pub fn koto_span_to_lsp_range(span: koto_parser::Span) -> Range {
     Range {
         start: koto_to_lsp_position(span.start),
@@ -30,5 +32,21 @@ pub fn symbol_kind_to_completion_kind(symbol_kind: SymbolKind) -> CompletionItem
         SymbolKind::OBJECT => CompletionItemKind::VALUE,
         SymbolKind::NULL => CompletionItemKind::VALUE,
         _ => CompletionItemKind::TEXT,
+    }
+}
+
+pub fn print_defs_refs(info: &SourceInfo) {
+    println!("Definitions:");
+    for def in &info.definitions {
+        println!(" - id: {} range: {:?}", def.id.as_str(), def.location.range);
+    }
+    println!("References:");
+    for refe in &info.references {
+        println!(
+            " - id: {} range: {:?}",
+            refe.id.as_str(),
+            refe.location.range
+        );
+        println!("  - definition range: {:?}", refe.definition.range);
     }
 }
