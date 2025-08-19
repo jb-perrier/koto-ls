@@ -1107,42 +1107,6 @@ pub struct Frame {
     pub definitions: Vec<DefinitionId>,
 }
 
-impl Frame {
-    // fn add_definition(
-    //     &mut self,
-    //     id: StringSlice<usize>,
-    //     location: Location,
-    //     kind: SymbolKind,
-    //     children: Vec<Definition>,
-    // ) {
-    //     self.definitions.push(Definition::new(
-    //         id,
-    //         location,
-    //         kind,
-    //         self.top_level,
-    //         children,
-    //         self.scope_id
-    //     ));
-    // }
-
-    // fn add_imported_definition(&mut self, definition: Definition) {
-    //     self.imported_definitions.push(definition);
-    // }
-
-    // fn get_definition(&self, id: &str) -> Option<&Definition> {
-    //     self.definitions
-    //         .iter()
-    //         .rev() // reversed so that the most recent matching definition is found
-    //         .find(|definition| definition.id.as_str() == id)
-    //         .or_else(|| {
-    //             self.imported_definitions
-    //                 .iter()
-    //                 .rev()
-    //                 .find(|definition| definition.id.as_str() == id)
-    //         })
-    // }
-}
-
 #[derive(Clone)]
 struct Context<'a> {
     ast: &'a Ast,
@@ -1569,51 +1533,51 @@ x = |y| y.baz = bar
             )
         }
 
-            #[test]
-            fn fib_references() -> Result<()> {
-                let script = r#"fib = |nf|
+        #[test]
+        fn fib_references() -> Result<()> {
+            let script = r#"fib = |nf|
         switch
             nf <= 0 then 0
             nf == 1 then 1
             else (fib nf - 1) + (fib nf - 2)"#;
 
-                find_references_test(
-                    script,
-                    &[
-                        (
-                            position(0, 0), // fib definition
-                            Some(&[range(4, 18, 3), range(4, 33, 3)]), // two recursive calls
-                            false,
-                        ),
-                        (
-                            position(0, 0), // fib definition (include definition)
-                            Some(&[range(0, 0, 3), range(4, 18, 3), range(4, 33, 3)]),
-                            true,
-                        ),
-                        (
-                            position(0, 7), // nf parameter
-                            Some(&[
-                                range(2, 12, 2),   // nf <= 0
-                                range(3, 12, 2),   // nf == 1
-                                range(4, 22, 2),  // fib nf - 1
-                                range(4, 37, 2),  // fib nf - 2
-                            ]),
-                            false,
-                        ),
-                        (
-                            position(0, 7), // nf parameter (include definition)
-                            Some(&[
-                                range(0, 7, 2),   // parameter definition
-                                range(2, 12, 2),   // nf <= 0
-                                range(3, 12, 2),   // nf == 1
-                                range(4, 22, 2),  // fib nf - 1
-                                range(4, 37, 2),  // fib nf - 2
-                            ]),
-                            true,
-                        ),
-                    ],
-                )
-            }
+            find_references_test(
+                script,
+                &[
+                    (
+                        position(0, 0),                            // fib definition
+                        Some(&[range(4, 18, 3), range(4, 33, 3)]), // two recursive calls
+                        false,
+                    ),
+                    (
+                        position(0, 0), // fib definition (include definition)
+                        Some(&[range(0, 0, 3), range(4, 18, 3), range(4, 33, 3)]),
+                        true,
+                    ),
+                    (
+                        position(0, 7), // nf parameter
+                        Some(&[
+                            range(2, 12, 2), // nf <= 0
+                            range(3, 12, 2), // nf == 1
+                            range(4, 22, 2), // fib nf - 1
+                            range(4, 37, 2), // fib nf - 2
+                        ]),
+                        false,
+                    ),
+                    (
+                        position(0, 7), // nf parameter (include definition)
+                        Some(&[
+                            range(0, 7, 2),  // parameter definition
+                            range(2, 12, 2), // nf <= 0
+                            range(3, 12, 2), // nf == 1
+                            range(4, 22, 2), // fib nf - 1
+                            range(4, 37, 2), // fib nf - 2
+                        ]),
+                        true,
+                    ),
+                ],
+            )
+        }
     }
 
     mod top_level_definitions {
