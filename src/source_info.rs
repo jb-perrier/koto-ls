@@ -412,7 +412,8 @@ impl<'i> SourceInfoBuilder<'i> {
         let mut current_frame_id = Some(frame_id);
         while let Some(fid) = current_frame_id {
             // Search definitions in the current scope
-            for definition in self.definitions.iter().rev() {
+            for definition in self.definitions.iter().rev()
+            .chain(self.imported_definitions.iter()) {
                 let ordering = cmp_range_to_range(&definition.location.range, location.range);
                 if definition.frame_id == fid
                     && definition.id.as_str() == id
