@@ -241,7 +241,7 @@ fn cmp_range_to_position(range: &Range, position: Position) -> Ordering {
     }
 }
 
-pub fn cmp_range_to_range(range_lhs: &Range, range_rhs: Range) -> Ordering {
+fn cmp_range_to_range(range_lhs: &Range, range_rhs: Range) -> Ordering {
     if range_lhs.start < range_rhs.start {
         Ordering::Less
     } else if range_lhs.end > range_rhs.end {
