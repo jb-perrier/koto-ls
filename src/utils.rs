@@ -35,6 +35,7 @@ pub fn symbol_kind_to_completion_kind(symbol_kind: SymbolKind) -> CompletionItem
     }
 }
 
+#[allow(unused)]
 pub fn print_defs_refs(info: &SourceInfo) {
     println!("Definitions:");
     for def in &info.definitions {
@@ -49,4 +50,41 @@ pub fn print_defs_refs(info: &SourceInfo) {
         );
         println!("  - definition range: {:?}", refe.definition.range);
     }
+}
+
+#[allow(unused)]
+pub async fn ls_print_defs_refs(client: &tower_lsp_server::Client, info: &SourceInfo) {
+    let mut defs = String::from("Definitions:\n");
+    for def in &info.definitions {
+        defs.push_str(&format!(
+            " - id: {} range: {:?}\n",
+            def.id.as_str(),
+            def.location.range
+        ));
+    }
+    client.log_message(tower_lsp_server::lsp_types::MessageType::INFO, defs).await;
+
+    let mut refs = String::from("References:\n");
+    for refe in &info.references {
+        refs.push_str(&format!(
+            " - id: {} range: {:?}\n",
+            refe.id.as_str(),
+            refe.location.range
+        ));
+        refs.push_str(&format!(
+            "  - definition range: {:?}\n",
+            refe.definition.range
+        ));
+    }
+    client.log_message(tower_lsp_server::lsp_types::MessageType::INFO, refs).await;
+
+    let mut imported_defs = String::from("Imported Definitions:\n");
+    for def in &info.imported_definitions {
+        imported_defs.push_str(&format!(
+            " - id: {} range: {:?}\n",
+            def.id.as_str(),
+            def.location.range
+        ));
+    }
+    client.log_message(tower_lsp_server::lsp_types::MessageType::INFO, imported_defs).await;
 }

@@ -82,30 +82,36 @@ impl SourceInfo {
 
     pub fn get_definition_from_location(&self, location: Location) -> Option<&Definition> {
         self.definitions
-            .iter()
-            .find(|definition| definition.location == location)
+            .binary_search_by(|definition| cmp_range_to_range(&definition.location.range, location.range))
+            .ok()
+            .and_then(|i| self.definitions.get(i))
     }
 
     pub fn get_definition_from_position(&self, position: Position) -> Option<&Definition> {
         self.definitions
-            .iter()
-            .find(|definition| is_position_in_range(&definition.location.range, position))
+            .binary_search_by(|definition| cmp_range_to_position(&definition.location.range, position))
+            .ok()
+            .and_then(|i| self.definitions.get(i))
     }
 
     pub fn get_referenced_definition_location(&self, position: Position) -> Option<Location> {
         self.references
-            .iter()
-            .find(|reference| is_position_in_range(&reference.location.range, position))
-            .map(|reference| reference.definition.clone())
+            .binary_search_by(|reference| {
+                cmp_range_to_position(&reference.location.range, position)
+            })
+            .ok()
+            .map(|i| self.references[i].definition.clone())
     }
 
     pub fn get_definition_location(&self, position: Position) -> Option<Location> {
         self.get_referenced_definition_location(position)
             .or_else(|| {
                 self.definitions
-                    .iter()
-                    .find(|definition| is_position_in_range(&definition.location.range, position))
-                    .map(|definition| definition.location.clone())
+                    .binary_search_by(|reference| {
+                        cmp_range_to_position(&reference.location.range, position)
+                    })
+                    .ok()
+                    .map(|i| self.definitions[i].location.clone())
             })
     }
 
@@ -146,7 +152,10 @@ impl SourceInfo {
         // Add definitions from all containing scopes (innermost first)
         for (frame_idx, _) in containing_frames {
             let frame_id = frame_idx.into();
-            let defs_iterator = self.definitions.iter().chain(self.imported_definitions.iter());
+            let defs_iterator = self
+                .definitions
+                .iter()
+                .chain(self.imported_definitions.iter());
             for def in defs_iterator {
                 if def.frame_id == frame_id {
                     let key = (
@@ -222,14 +231,10 @@ impl Iterator for FindReferencesIter<'_> {
     }
 }
 
-pub fn is_position_in_range(range: &Range, position: Position) -> bool {
-    range.start <= position && position <= range.end
-}
-
 pub fn cmp_range_to_position(range: &Range, position: Position) -> Ordering {
     if range.start > position {
         Ordering::Greater
-    } else if range.end <= position {
+    } else if range.end < position {
         Ordering::Less
     } else {
         Ordering::Equal
@@ -442,6 +447,24 @@ impl<'i> SourceInfoBuilder<'i> {
     fn build(mut self, error: Option<Error>) -> SourceInfo {
         // Resolve unresolved references
         self.resolve_references();
+
+        self.references
+            .sort_by_key(|reference| reference.location.range.start);
+
+        self.definitions
+            .sort_by_key(|definition| definition.location.range.start);
+
+         // References should already be sorted
+        debug_assert!(is_sorted::IsSorted::is_sorted_by_key(
+            &mut self.references.iter(),
+            |reference| reference.location.range.start
+        ));
+
+        // Definitions should already be sorted
+        debug_assert!(is_sorted::IsSorted::is_sorted_by_key(
+            &mut self.definitions.iter(),
+            |definition| definition.location.range.start
+        ));
 
         SourceInfo {
             source: self.script,
@@ -1061,7 +1084,6 @@ impl<'i> SourceInfoBuilder<'i> {
             location: Location::new(uri, *span),
             parent,
             definitions: Vec::with_capacity(locals_capacity),
-            id: FrameId(self.frames.len()),
         });
 
         self.frame_stack.push(FrameId(self.frames.len() - 1));
@@ -1091,7 +1113,6 @@ impl From<usize> for FrameId {
 pub struct Frame {
     pub location: Location,
     pub parent: Option<FrameId>,
-    pub id: FrameId,
     pub definitions: Vec<DefinitionId>,
 }
 
@@ -1171,6 +1192,17 @@ mod test {
 
     fn test_uri() -> Arc<Uri> {
         Arc::new(Uri::from_str("file:///test.koto").unwrap())
+    }
+
+    fn range_at_position(line: u32, character: u32) -> Range {
+        Range::new(position(line, character), position(line, character))
+    }
+
+    fn location_at_position(uri: Arc<Uri>, line: u32, character: u32) -> Location {
+        Location {
+            uri,
+            range: range_at_position(line, character),
+        }
     }
 
     mod goto_definition {
@@ -1740,6 +1772,212 @@ x =
                     ],
                 )],
             )
+        }
+    }
+
+    mod completions {
+        use super::*;
+
+        #[test]
+        fn simple_variables() {
+            let script = "\
+x = 42
+y = \"hello\"
+z = true
+x + 
+";
+
+            let mut info_cache = InfoCache::default();
+            let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
+
+            let location = location_at_position(test_uri(), 3, 3); // After "x + "
+            let completions = info.get_available_definitions_at_location(location);
+
+            assert_eq!(completions.len(), 3);
+
+            let names: Vec<String> = completions
+                .iter()
+                .map(|d| d.id.as_str().to_string())
+                .collect();
+            assert!(names.contains(&"x".to_string()));
+            assert!(names.contains(&"y".to_string()));
+            assert!(names.contains(&"z".to_string()));
+        }
+
+        #[test]
+        fn function_scope() {
+            let script = "\
+x = 1
+foo = |a, b|
+  local_var = a + b
+  x + local_var + 
+";
+
+            let mut info_cache = InfoCache::default();
+            let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
+
+            let location = location_at_position(test_uri(), 3, 16); // Before the end of the function
+            let completions = info.get_available_definitions_at_location(location);
+
+            let names: Vec<String> = completions
+                .iter()
+                .map(|d| d.id.as_str().to_string())
+                .collect();
+            assert!(names.contains(&"x".to_string())); // global
+            assert!(names.contains(&"a".to_string())); // parameter
+            assert!(names.contains(&"b".to_string())); // parameter
+            assert!(names.contains(&"local_var".to_string())); // local variable
+        }
+
+        #[test]
+        fn nested_scopes() {
+            let script = "\
+outer = 1
+f = |x|
+  inner = 2
+  g = |y|
+    nested = 3
+    outer + inner + x + y + 
+";
+
+            let mut info_cache = InfoCache::default();
+            let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
+
+            let location = location_at_position(test_uri(), 5, 26); // Before the end of the inner function
+            let completions = info.get_available_definitions_at_location(location);
+
+            let names: Vec<String> = completions
+                .iter()
+                .map(|d| d.id.as_str().to_string())
+                .collect();
+            assert!(names.contains(&"outer".to_string())); // global
+            assert!(names.contains(&"x".to_string())); // outer function parameter
+            assert!(names.contains(&"inner".to_string())); // outer function local
+            assert!(names.contains(&"y".to_string())); // inner function parameter
+            assert!(names.contains(&"nested".to_string())); // current scope
+        }
+
+        #[test]
+        fn excludes_out_of_scope() {
+            let script = "\
+global_var = 1
+f = |param|
+  local_var = 2
+  local_var + param
+g = |other_param|
+  other_local = 3
+  global_var + other_local
+";
+
+            let mut info_cache = InfoCache::default();
+            let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
+
+            // Look for a position inside the second function where other_local would be defined
+            let location = location_at_position(test_uri(), 6, 15); // After "other_local"
+            let completions = info.get_available_definitions_at_location(location);
+
+            let names: Vec<String> = completions
+                .iter()
+                .map(|d| d.id.as_str().to_string())
+                .collect();
+
+            // Should have access to globals and current function scope
+            assert!(names.contains(&"global_var".to_string()));
+
+            // Should NOT have access to:
+            assert!(!names.contains(&"param".to_string())); // from different function
+            assert!(!names.contains(&"local_var".to_string())); // from different function
+        }
+
+        #[test]
+        fn top_level() {
+            let script = "\
+x = 1
+y = 2
+f = |a| a * 2
+";
+
+            let mut info_cache = InfoCache::default();
+            let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
+
+            let location = location_at_position(test_uri(), 3, 0); // Start of line 4
+            let completions = info.get_available_definitions_at_location(location);
+
+            let names: Vec<String> = completions
+                .iter()
+                .map(|d| d.id.as_str().to_string())
+                .collect();
+            assert!(names.contains(&"x".to_string()));
+            assert!(names.contains(&"y".to_string()));
+            assert!(names.contains(&"f".to_string()));
+        }
+
+        #[test]
+        fn empty_script() {
+            let script = "";
+
+            let mut info_cache = InfoCache::default();
+            let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
+
+            let location = location_at_position(test_uri(), 0, 0);
+            let completions = info.get_available_definitions_at_location(location);
+
+            assert_eq!(completions.len(), 0);
+        }
+
+        #[test]
+        fn variable_shadowing() {
+            let script = "\
+x = \"global\"
+f = |x|
+  x = x.upper()
+  x + 
+";
+
+            let mut info_cache = InfoCache::default();
+            let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
+
+            let location = location_at_position(test_uri(), 3, 5); // After "x + "
+            let completions = info.get_available_definitions_at_location(location);
+
+            let names: Vec<String> = completions
+                .iter()
+                .map(|d| d.id.as_str().to_string())
+                .collect();
+
+            // Should contain x (the redefined local one)
+            assert!(names.contains(&"x".to_string()));
+
+            // Verify we get the local definitions
+            let x_definitions: Vec<_> = completions
+                .iter()
+                .filter(|d| d.id.as_str() == "x")
+                .collect();
+            assert!(!x_definitions.is_empty());
+        }
+
+        #[test]
+        fn imports() {
+            let script = "\
+import foo
+from bar import baz
+local_var = 1
+foo + baz +
+";
+
+            let mut info_cache = InfoCache::default();
+            let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
+
+            let location = location_at_position(test_uri(), 3, 11); // After "foo + baz + "
+            let completions = info.get_available_definitions_at_location(location);
+
+            let names: Vec<String> = completions
+                .iter()
+                .map(|d| d.id.as_str().to_string())
+                .collect();
+            assert!(names.contains(&"foo".to_string()));
+            assert!(names.contains(&"baz".to_string()));
+            assert!(names.contains(&"local_var".to_string()));
         }
     }
 }
