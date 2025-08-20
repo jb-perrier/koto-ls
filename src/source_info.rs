@@ -116,7 +116,7 @@ impl SourceInfo {
     }
 
     pub fn find_references(
-        &'_ self,
+        &self,
         position: Position,
         include_definition: bool,
     ) -> Option<FindReferencesIter<'_>> {
