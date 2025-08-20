@@ -176,30 +176,21 @@ impl LanguageServer for KotoServer {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+        let result = self
+            .source_info
+            .lock()
+            .await
+            .get(&uri)
+            .and_then(|info| info.get_definition_location(position))
+            .map(|definition| GotoDefinitionResponse::Scalar(definition.into()));
 
-        let Some(info) = self.source_info.lock().await.get(&uri) else {
+        if result.is_none() {
             self.client
-                .log_message(
-                    MessageType::INFO,
-                    "Goto-Definition:: Unable to lock source information",
-                )
+                .log_message(MessageType::INFO, "No definition found")
                 .await;
-            return Ok(None);
-        };
+        }
 
-        let Some(location) = info.get_definition_location(position) else {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Goto-Definition:: Cannot find definition at {position:?}"),
-                )
-                .await;
-            return Ok(None);
-        };
-
-        Ok(Some(GotoDefinitionResponse::Scalar(
-            location.clone().into(),
-        )))
+        Ok(result)
     }
 
     async fn document_symbol(
@@ -207,18 +198,15 @@ impl LanguageServer for KotoServer {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
-        let Some(info) = self.source_info.lock().await.get(&uri) else {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    "Document-Symbol: Unable to lock source information",
-                )
-                .await;
-            return Ok(None);
-        };
+        let result = self.source_info.lock().await.get(&uri).map(|info| {
+            let definitions = info
+                .top_level_definitions()
+                .map(DocumentSymbol::from)
+                .collect();
+            DocumentSymbolResponse::Nested(definitions)
+        });
 
-        let definitions = info.top_level_definitions().map(DocumentSymbol::from).collect();
-        Ok(Some(DocumentSymbolResponse::Nested(definitions)))
+        Ok(result)
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -228,12 +216,9 @@ impl LanguageServer for KotoServer {
 
         let Some(info) = self.source_info.lock().await.get(&uri) else {
             self.client
-                .log_message(
-                    MessageType::INFO,
-                    "References: Unable to lock source information",
-                )
+                .log_message(MessageType::ERROR, "No references found")
                 .await;
-            return Ok(None);
+            return Err(Error::invalid_params("No source information available"));
         };
 
         let result = info
