@@ -231,7 +231,7 @@ impl Iterator for FindReferencesIter<'_> {
     }
 }
 
-pub fn cmp_range_to_position(range: &Range, position: Position) -> Ordering {
+fn cmp_range_to_position(range: &Range, position: Position) -> Ordering {
     if range.start > position {
         Ordering::Greater
     } else if range.end < position {
