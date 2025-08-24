@@ -41,6 +41,12 @@ pub fn print_defs_refs(info: &SourceInfo) {
     for def in &info.definitions {
         println!(" - id: {} range: {:?}", def.id.as_str(), def.location.range);
     }
+
+    println!("Definitions by Position:");
+    for (range, id) in &info.definitions_by_range {
+        println!(" - id: {} range: {:?}", id.0, range);
+    }
+
     println!("References:");
     for refe in &info.references {
         println!(
@@ -49,6 +55,11 @@ pub fn print_defs_refs(info: &SourceInfo) {
             refe.location.range
         );
         println!("  - definition range: {:?}", refe.definition.range);
+    }
+
+    println!("References by Position:");
+    for (range, id) in &info.references_by_range {
+        println!(" - id: {} range: {:?}", id.0, range);
     }
 }
 
@@ -62,7 +73,17 @@ pub async fn ls_print_defs_refs(client: &tower_lsp_server::Client, info: &Source
             def.location.range
         ));
     }
-    client.log_message(tower_lsp_server::lsp_types::MessageType::INFO, defs).await;
+    client
+        .log_message(tower_lsp_server::lsp_types::MessageType::INFO, defs)
+        .await;
+
+    let mut defs_by_pos = String::from("Definitions by Position:\n");
+    for (pos, id) in &info.definitions_by_range {
+        defs_by_pos.push_str(&format!("   - id: {} range: {:?}\n", id.0, pos));
+    }
+    client
+        .log_message(tower_lsp_server::lsp_types::MessageType::INFO, defs_by_pos)
+        .await;
 
     let mut refs = String::from("References:\n");
     for refe in &info.references {
@@ -76,15 +97,15 @@ pub async fn ls_print_defs_refs(client: &tower_lsp_server::Client, info: &Source
             refe.definition.range
         ));
     }
-    client.log_message(tower_lsp_server::lsp_types::MessageType::INFO, refs).await;
+    client
+        .log_message(tower_lsp_server::lsp_types::MessageType::INFO, refs)
+        .await;
 
-    let mut imported_defs = String::from("Imported Definitions:\n");
-    for def in &info.imported_definitions {
-        imported_defs.push_str(&format!(
-            " - id: {} range: {:?}\n",
-            def.id.as_str(),
-            def.location.range
-        ));
+    let mut refs_by_pos = String::from("References by Position:\n");
+    for (pos, id) in &info.references_by_range {
+        refs_by_pos.push_str(&format!("   - id: {} range: {:?}\n", id.0, pos));
     }
-    client.log_message(tower_lsp_server::lsp_types::MessageType::INFO, imported_defs).await;
+    client
+        .log_message(tower_lsp_server::lsp_types::MessageType::INFO, refs_by_pos)
+        .await;
 }

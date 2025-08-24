@@ -40,10 +40,10 @@ pub struct SourceInfo {
     source: String,
     // A vec of all definitions, sorted by start position
     pub definitions: Vec<Definition>,
-    // All imported definitions from other files.
-    pub imported_definitions: Vec<Definition>,
+    pub definitions_by_range: Vec<(Range, DefinitionId)>,
     // A vec of all references, sorted by start position
     pub references: Vec<Reference>,
+    pub references_by_range: Vec<(Range, ReferenceId)>,
     /// A vec of all frames, sorted by start position
     pub frames: Vec<Frame>,
     /// If an error was encountered while compiling the script it's cached here
@@ -81,37 +81,46 @@ impl SourceInfo {
     }
 
     pub fn get_definition_from_location(&self, location: Location) -> Option<&Definition> {
-        self.definitions
-            .binary_search_by(|definition| cmp_range_to_range(&definition.location.range, location.range))
+        self.definitions_by_range
+            .binary_search_by(|(range, _)| cmp_range_to_range(range, location.range))
             .ok()
-            .and_then(|i| self.definitions.get(i))
+            .map(|i| &self.definitions_by_range[i])
+            .and_then(|definition| self.definitions.get(definition.1.0))
     }
 
     pub fn get_definition_from_position(&self, position: Position) -> Option<&Definition> {
-        self.definitions
-            .binary_search_by(|definition| cmp_range_to_position(&definition.location.range, position))
+        self.definitions_by_range
+            .binary_search_by(|(range, _)| cmp_range_to_position(range, position))
             .ok()
-            .and_then(|i| self.definitions.get(i))
+            .map(|i| &self.definitions_by_range[i])
+            .and_then(|definition| self.definitions.get(definition.1.0))
     }
 
     pub fn get_referenced_definition_location(&self, position: Position) -> Option<Location> {
-        self.references
-            .binary_search_by(|reference| {
-                cmp_range_to_position(&reference.location.range, position)
-            })
+        self.references_by_range
+            .binary_search_by(|(range, _)| cmp_range_to_position(range, position))
             .ok()
-            .map(|i| self.references[i].definition.clone())
+            .map(|i| &self.references_by_range[i])
+            .and_then(|reference| {
+                self.references
+                    .get(reference.1.0)
+                    .map(|refe| refe.definition.clone())
+            })
     }
 
     pub fn get_definition_location(&self, position: Position) -> Option<Location> {
         self.get_referenced_definition_location(position)
             .or_else(|| {
-                self.definitions
-                    .binary_search_by(|reference| {
-                        cmp_range_to_position(&reference.location.range, position)
+                self.get_definition_from_position(position)
+                    .map(|definition| {
+                        // If the definition has a remote location, return it
+                        // e.g imported definition
+                        if let Some(ref remote) = definition.imported_location {
+                            remote.clone()
+                        } else {
+                            definition.location.clone()
+                        }
                     })
-                    .ok()
-                    .map(|i| self.definitions[i].location.clone())
             })
     }
 
@@ -120,12 +129,15 @@ impl SourceInfo {
         position: Position,
         include_definition: bool,
     ) -> Option<FindReferencesIter<'_>> {
-        self.get_definition_location(position)
-            .map(|definition| FindReferencesIter {
+        self.get_definition_location(position).map(|definition| {
+            // TODO: chains the iterator with other files ?
+            // so we can see all references to this definition
+            FindReferencesIter {
                 definition,
                 references: self.references.iter(),
                 include_definition,
-            })
+            }
+        })
     }
 
     pub fn top_level_definitions(&self) -> impl Iterator<Item = &Definition> {
@@ -137,45 +149,38 @@ impl SourceInfo {
 
     pub fn get_available_definitions_at_location(&self, location: Location) -> Vec<Definition> {
         let mut available_definitions = Vec::new();
-        let mut seen_definitions = std::collections::HashSet::new();
 
-        // Find all scopes that contain this location
-        let mut containing_frames = Vec::new();
-        for (frame_idx, frame) in self.frames.iter().enumerate() {
+        // Find the innermost frame that contains this location
+        let mut innermost_frame_id = None;
+        for (frame_id, frame) in self.frames.iter().enumerate() {
             if frame.location.range.start <= location.range.start
                 && frame.location.range.end >= location.range.end
             {
-                containing_frames.push((frame_idx, frame));
+                innermost_frame_id = Some(FrameId(frame_id));
             }
         }
 
-        // Add definitions from all containing scopes (innermost first)
-        for (frame_idx, _) in containing_frames {
-            let frame_id = frame_idx.into();
-            let defs_iterator = self
-                .definitions
-                .iter()
-                .chain(self.imported_definitions.iter());
-            for def in defs_iterator {
-                if def.frame_id == frame_id {
-                    let key = (
-                        def.id.as_str(),
-                        def.location.range.start.line,
-                        def.location.range.start.character,
-                    );
-                    if seen_definitions.insert(key) {
-                        available_definitions.push(def.clone());
+        // Append definitions from frame tree
+        let mut current_frame_id = innermost_frame_id;
+        while let Some(fid) = current_frame_id {
+            if let Some(frame) = self.frames.get(fid.0) {
+                for def_id in &frame.definitions {
+                    if let Some(definition) = self.definitions.get(def_id.0)
+                        // Remove definition that are later in the scope
+                        && cmp_range_to_position(&definition.location.range, location.range.start)
+                            != Ordering::Greater
+                        // Remove shadowed definitions
+                        && available_definitions
+                            .iter()
+                            .all(|def: &Definition| def.id != definition.id)
+                    {
+                        available_definitions.push(definition.clone());
                     }
                 }
             }
+            current_frame_id = self.frames.get(fid.0).and_then(|frame| frame.parent);
         }
 
-        // Remove all definitions that are after the current location
-        available_definitions.retain(|def| {
-            cmp_range_to_position(&def.location.range, location.range.start) != Ordering::Greater
-        });
-
-        // Sort available_definitions by distance to the current location
         available_definitions.sort_by_key(|def| def.location.range.start);
         available_definitions
     }
@@ -234,7 +239,7 @@ impl Iterator for FindReferencesIter<'_> {
 fn cmp_range_to_position(range: &Range, position: Position) -> Ordering {
     if range.start > position {
         Ordering::Greater
-    } else if range.end < position {
+    } else if range.end <= position {
         Ordering::Less
     } else {
         Ordering::Equal
@@ -252,7 +257,7 @@ fn cmp_range_to_range(range_lhs: &Range, range_rhs: Range) -> Ordering {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct DefinitionId(usize);
+pub struct DefinitionId(pub usize);
 
 impl From<DefinitionId> for usize {
     fn from(value: DefinitionId) -> Self {
@@ -273,6 +278,8 @@ pub struct Definition {
     pub kind: SymbolKind,
     pub children: Option<Vec<Definition>>,
     pub frame_id: FrameId,
+    /// If this definition was imported from another module, the location in that module
+    pub imported_location: Option<Location>,
 }
 
 impl Definition {
@@ -293,6 +300,24 @@ impl Definition {
                 Some(children)
             },
             frame_id,
+            imported_location: None,
+        }
+    }
+
+    fn imported(
+        id: StringSlice<usize>,
+        location: Location,
+        kind: SymbolKind,
+        redirect_location: Location,
+        frame_id: FrameId,
+    ) -> Self {
+        Self {
+            location,
+            id,
+            kind,
+            children: None,
+            frame_id,
+            imported_location: Some(redirect_location),
         }
     }
 }
@@ -319,7 +344,7 @@ impl From<&Definition> for DocumentSymbol {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct ReferenceId(usize);
+pub struct ReferenceId(pub usize);
 
 impl From<ReferenceId> for usize {
     fn from(value: ReferenceId) -> Self {
@@ -366,11 +391,13 @@ struct SourceInfoBuilder<'i> {
     // off the stack. This results in an unsorted ordering, so the definitions get sorted in the
     // build function.
     definitions: Vec<Definition>,
-    // All imported definitions from other files.
-    imported_definitions: Vec<Definition>,
+    // A map from position to definition ID for quick lookups
+    definitions_by_position: Vec<(Range, DefinitionId)>,
     // All references that have been found in the file.
     // The references get added as soon as they're encountered in the AST, so they're always sorted.
     references: Vec<Reference>,
+    // A map from position to reference ID for quick lookups
+    references_by_position: Vec<(Range, ReferenceId)>,
     // Unresolved references are collected and resolved in build function
     unresolved_references: Vec<UnresolvedReference>,
 }
@@ -384,8 +411,9 @@ impl<'i> SourceInfoBuilder<'i> {
             frames: Vec::new(),
             frame_stack: Vec::new(),
             definitions: Vec::new(),
-            imported_definitions: Vec::new(),
+            definitions_by_position: Vec::new(),
             references: Vec::new(),
+            references_by_position: Vec::new(),
             unresolved_references: Vec::new(),
         };
 
@@ -401,22 +429,18 @@ impl<'i> SourceInfoBuilder<'i> {
         id: &str,
         frame_id: FrameId,
         location: &Location,
-    ) -> Option<&Definition> {
+    ) -> Option<(DefinitionId, &Definition)> {
         let mut current_frame_id = Some(frame_id);
         while let Some(fid) = current_frame_id {
             // Search definitions in the current scope
-            for definition in self
-                .definitions
-                .iter()
-                .rev()
-                .chain(self.imported_definitions.iter())
+            for (index, definition) in self.definitions.iter().enumerate().rev()
             {
                 let ordering = cmp_range_to_range(&definition.location.range, location.range);
                 if definition.frame_id == fid
                     && definition.id.as_str() == id
                     && (ordering == Ordering::Equal || ordering == Ordering::Less)
                 {
-                    return Some(definition);
+                    return Some((DefinitionId(index), definition));
                 }
             }
             // Move to parent scope if available
@@ -426,12 +450,12 @@ impl<'i> SourceInfoBuilder<'i> {
     }
 
     fn resolve_references(&mut self) {
-        for unresolved in &self.unresolved_references {
+        let references = std::mem::take(&mut self.unresolved_references);
+        for unresolved in references {
             let id = unresolved.id.as_str();
             let frame_id = unresolved.frame_id;
-            let Some(def) = self.get_definition_from_frame(id, frame_id, &unresolved.location)
+            let Some((_, def)) = self.get_definition_from_frame(id, frame_id, &unresolved.location)
             else {
-                // Definition not found
                 continue;
             };
 
@@ -441,6 +465,10 @@ impl<'i> SourceInfoBuilder<'i> {
                 id: unresolved.id.clone(),
                 frame_id: unresolved.frame_id,
             });
+
+            let reference_id = ReferenceId(self.references.len() - 1);
+            self.references_by_position
+                .push((unresolved.location.range, reference_id));
         }
     }
 
@@ -448,29 +476,18 @@ impl<'i> SourceInfoBuilder<'i> {
         // Resolve unresolved references
         self.resolve_references();
 
-        self.references
-            .sort_by_key(|reference| reference.location.range.start);
-
-        self.definitions
-            .sort_by_key(|definition| definition.location.range.start);
-
-         // References should already be sorted
-        debug_assert!(is_sorted::IsSorted::is_sorted_by_key(
-            &mut self.references.iter(),
-            |reference| reference.location.range.start
-        ));
-
-        // Definitions should already be sorted
-        debug_assert!(is_sorted::IsSorted::is_sorted_by_key(
-            &mut self.definitions.iter(),
-            |definition| definition.location.range.start
-        ));
+        // Sort definitions and references by their start position
+        self.definitions_by_position
+            .sort_by_key(|(range, _)| range.start);
+        self.references_by_position
+            .sort_by_key(|(range, _)| range.start);
 
         SourceInfo {
             source: self.script,
-            imported_definitions: self.imported_definitions,
             definitions: self.definitions,
+            definitions_by_range: self.definitions_by_position,
             references: self.references,
+            references_by_range: self.references_by_position,
             error,
             frames: self.frames,
         }
@@ -558,8 +575,6 @@ impl<'i> SourceInfoBuilder<'i> {
                 self.pop_frame();
             }
             Node::FunctionArgs { args, .. } => {
-                let definitions = &mut self.frame_mut().definitions;
-                definitions.reserve(definitions.capacity() + args.len());
                 self.visit_nested(args, ctx.with_ids_as_definitions());
             }
             Node::Import { from, items } => self.visit_import(from, items, &ctx),
@@ -703,8 +718,8 @@ impl<'i> SourceInfoBuilder<'i> {
                             ctx.string(*id),
                             Location::new(self.uri.clone(), *ctx.ast.span(key_node.span)),
                             SymbolKind::FIELD,
-                            vec![],               // TODO - nested child definitions?
-                            self.current_frame(), // Use the current frame id
+                            vec![],                  // TODO - nested child definitions?
+                            self.current_frame_id(), // Use the current frame id
                         ))
                     }
                 }
@@ -717,8 +732,8 @@ impl<'i> SourceInfoBuilder<'i> {
                         field_id.into(),
                         Location::new(self.uri.clone(), *ctx.ast.span(key_node.span)),
                         SymbolKind::FIELD,
-                        vec![],               // TODO - nested child definitions?
-                        self.current_frame(), // Use the current frame id
+                        vec![],                  // TODO - nested child definitions?
+                        self.current_frame_id(), // Use the current frame id
                     ))
                 }
                 _ => {}
@@ -800,28 +815,32 @@ impl<'i> SourceInfoBuilder<'i> {
                             .top_level_definitions()
                             .find(|definition| definition.id == id_string)
                         {
-                            self.add_imported_definition(definition.clone());
                             // Also add a reference here to enable go-to-definition
                             self.add_reference_with_definition(
-                                id_string,
+                                id_string.clone(),
                                 *ctx.span(item_node),
                                 definition.location.clone(),
                             );
+
                             if let (Some(as_node), Some(as_string)) = (as_node, as_string) {
+                                // Add a local definition for the alias
+                                let _ = self.add_definition(
+                                    as_string.clone(),
+                                    SymbolKind::VARIABLE,
+                                    vec![],
+                                    as_node,
+                                    ctx.ast,
+                                );
+
                                 // ...and also a reference for the alias
                                 self.add_reference_with_definition(
                                     as_string.clone(),
                                     *ctx.span(as_node),
                                     definition.location.clone(),
                                 );
-                                // Add a local definition for the alias
-                                self.add_definition(
-                                    as_string,
-                                    SymbolKind::VARIABLE,
-                                    vec![],
-                                    as_node,
-                                    ctx.ast,
-                                );
+                            } else {
+                                // If there's no alias, just import the definition so we can see it in autocompletion
+                                self.add_imported_definition(*ctx.span(item_node), definition.clone());
                             }
                             continue;
                         }
@@ -840,19 +859,17 @@ impl<'i> SourceInfoBuilder<'i> {
                             self.analyze_module(module_url.clone());
                             if self.info_cache.get(&module_url).is_some() {
                                 // The module was successfully analyzed, so add a reference
-                                let module_location =
-                                    Location::new(module_url.clone(), Span::default());
                                 self.add_reference_with_definition(
                                     module_name,
                                     *ctx.span(item_node),
-                                    module_location.clone(),
+                                    Location::new(module_url.clone(), Span::default()),
                                 );
                                 if let Some(as_node) = as_node {
                                     // ...and also a reference for the alias
                                     self.add_reference_with_definition(
                                         as_string.clone().unwrap(), // as_string is defined with as_node
                                         *ctx.span(as_node),
-                                        module_location,
+                                        Location::new(module_url.clone(), Span::default()),
                                     );
                                 }
                             }
@@ -862,7 +879,7 @@ impl<'i> SourceInfoBuilder<'i> {
                     // Add a local definition for the imported item
                     let name = as_string.unwrap_or(id_string);
                     let name_node = as_node.unwrap_or(item_node);
-                    self.add_definition(name, SymbolKind::VARIABLE, vec![], name_node, ctx.ast)
+                    self.add_definition(name, SymbolKind::VARIABLE, vec![], name_node, ctx.ast);
                 }
                 (Node::Str(s), maybe_as) => {
                     self.visit_string(s, ctx.default());
@@ -875,7 +892,7 @@ impl<'i> SourceInfoBuilder<'i> {
                                 vec![],
                                 name_node,
                                 ctx.ast,
-                            )
+                            );
                         }
                     }
                 }
@@ -984,8 +1001,8 @@ impl<'i> SourceInfoBuilder<'i> {
         }
     }
 
-    fn get_definition(&self, id: &str, location: &Location) -> Option<&Definition> {
-        let current_frame = self.current_frame();
+    fn get_definition(&self, id: &str, location: &Location) -> Option<(DefinitionId, &Definition)> {
+        let current_frame = self.current_frame_id();
         self.get_definition_from_frame(id, current_frame, location)
     }
 
@@ -996,20 +1013,39 @@ impl<'i> SourceInfoBuilder<'i> {
         children: Vec<Definition>,
         node: &AstNode,
         ast: &Ast,
-    ) {
+    ) -> DefinitionId {
         let span = ast.span(node.span);
         let uri = self.uri.clone();
         self.definitions.push(Definition::new(
-            id,
+            id.clone(),
             Location::new(uri, *span),
             kind,
             children,
-            self.current_frame(),
+            self.current_frame_id(),
         ));
+
+        let definition_id = DefinitionId(self.definitions.len() - 1);
+        self.definitions_by_position
+            .push((koto_span_to_lsp_range(*span), definition_id));
+
+        self.current_frame_mut().definitions.push(definition_id);
+        definition_id
     }
 
-    fn add_imported_definition(&mut self, definition: Definition) {
-        self.imported_definitions.push(definition);
+    fn add_imported_definition(&mut self, local_span: Span, imported_definition: Definition) {
+        let local_location = Location::new(self.uri.clone(), local_span);
+        let range = imported_definition.location.range;
+        self.definitions.push(Definition::imported(
+            imported_definition.id,
+            local_location,
+            imported_definition.kind,
+            imported_definition.location.clone(),
+            self.current_frame_id(),
+        ));
+
+        let definition_id = DefinitionId(self.definitions.len() - 1);
+        self.definitions_by_position.push((range, definition_id));
+        self.current_frame_mut().definitions.push(definition_id);
     }
 
     fn add_reference(&mut self, id: ConstantIndex, node: &AstNode, ast: &Ast) {
@@ -1017,12 +1053,18 @@ impl<'i> SourceInfoBuilder<'i> {
         let span = ast.span(node.span);
         let location = Location::new(self.uri.clone(), *span);
 
-        let Some(definition) = self.get_definition(id.as_str(), &location) else {
+        let Some((_, definition)) = self.get_definition(id.as_str(), &location) else {
             self.add_unresolved_reference(id, *span);
             return;
         };
 
-        let location = definition.location.clone();
+        // Check if the definition is imported and leads to the orignal one
+        let location = if let Some(remote) = &definition.imported_location {
+            remote.clone()
+        } else {
+            definition.location.clone()
+        };
+
         self.add_reference_with_definition(id, *span, location);
     }
 
@@ -1030,7 +1072,7 @@ impl<'i> SourceInfoBuilder<'i> {
         self.unresolved_references.push(UnresolvedReference {
             location: Location::new(self.uri.clone(), span),
             id,
-            frame_id: self.current_frame(),
+            frame_id: self.current_frame_id(),
         });
     }
 
@@ -1038,17 +1080,28 @@ impl<'i> SourceInfoBuilder<'i> {
         &mut self,
         id: StringSlice<usize>,
         span: Span,
-        definition: Location,
+        definition_location: Location,
     ) {
         self.references.push(Reference {
             location: Location::new(self.uri.clone(), span),
-            definition,
+            definition: definition_location,
             id,
-            frame_id: self.current_frame(),
+            frame_id: self.current_frame_id(),
         });
+
+        let reference_id = ReferenceId(self.references.len() - 1);
+        self.references_by_position
+            .push((koto_span_to_lsp_range(span), reference_id));
     }
 
-    fn current_frame(&self) -> FrameId {
+    fn current_frame_mut(&mut self) -> &mut Frame {
+        let current_frame_id = self.current_frame_id();
+        self.frames
+            .get_mut(current_frame_id.0)
+            .expect("Missing current frame")
+    }
+
+    fn current_frame_id(&self) -> FrameId {
         // Should never be empty, keep the expect
         self.frame_stack
             .last()
@@ -1070,14 +1123,9 @@ impl<'i> SourceInfoBuilder<'i> {
         }
     }
 
-    fn frame_mut(&mut self) -> &mut Frame {
-        self.frames.last_mut().expect("Missing frame")
-    }
-
     fn push_frame(&mut self, locals_capacity: usize, ast: &Ast, node: &AstNode) {
         let span = ast.span(node.span);
         let uri = self.uri.clone();
-        // If top level frame == None
         let parent = self.frame_stack.last().copied();
         self.definitions.reserve_exact(locals_capacity);
         self.frames.push(Frame {
