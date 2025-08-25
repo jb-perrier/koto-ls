@@ -1058,7 +1058,7 @@ impl<'i> SourceInfoBuilder<'i> {
             return;
         };
 
-        // Check if the definition is imported and leads to the orignal one
+        // Check if the definition is imported
         let location = if let Some(remote) = &definition.imported_location {
             remote.clone()
         } else {
