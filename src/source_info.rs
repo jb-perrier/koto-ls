@@ -439,7 +439,7 @@ impl<'i> SourceInfoBuilder<'i> {
                 let ordering = cmp_range_to_range(&definition.location.range, location.range);
                 if definition.frame_id == fid
                     && definition.id.as_str() == id
-                    && (ordering == Ordering::Equal || ordering == Ordering::Less)
+                    && ordering != Ordering::Greater
                 {
                     return Some((DefinitionId(index), definition));
                 }
@@ -1059,7 +1059,7 @@ impl<'i> SourceInfoBuilder<'i> {
             return;
         };
 
-        // Check if the definition is imported and leads to the orignal one
+        // Check if the definition is imported
         let location = if let Some(remote) = &definition.imported_location {
             remote.clone()
         } else {
@@ -1103,7 +1103,7 @@ impl<'i> SourceInfoBuilder<'i> {
     }
 
     fn current_frame_id(&self) -> FrameId {
-        // Should never be empty, keep the expect
+        // The frame stack should never be empty
         self.frame_stack
             .last()
             .copied()
