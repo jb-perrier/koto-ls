@@ -147,7 +147,7 @@ impl SourceInfo {
             .filter(move |definition| definition.frame_id == top_frame)
     }
 
-    pub fn get_available_definitions_at_location(&self, location: Location) -> Vec<Definition> {
+    pub fn get_available_definitions_at_location(&self, location: Location) -> Vec<&Definition> {
         let mut available_definitions = Vec::new();
 
         // Find the innermost frame that contains this location
@@ -177,13 +177,15 @@ impl SourceInfo {
             current_frame_id = self.frames.get(fid.0).and_then(|frame| frame.parent);
         }
 
+        // Order by name
+        // Reverse to get the latest definition first in groups of items that are equal
+        // Then remove duplicates
         available_definitions.sort_by_key(|def| def.id.as_str());
-    
-        // Order by id and remove consecutive duplicates
+        available_definitions.reverse();
         available_definitions.dedup_by_key(|def| &def.id);
+
         available_definitions.sort_by_key(|def| def.location.range.start);
-        
-        available_definitions.iter().map(|def| (*def).clone()).collect()
+        available_definitions
     }
 }
 
