@@ -169,20 +169,21 @@ impl SourceInfo {
                         // Remove definition that are later in the scope
                         && cmp_range_to_position(&definition.location.range, location.range.start)
                             != Ordering::Greater
-                        // Remove shadowed definitions
-                        && available_definitions
-                            .iter()
-                            .all(|def: &Definition| def.id != definition.id)
                     {
-                        available_definitions.push(definition.clone());
+                        available_definitions.push(definition);
                     }
                 }
             }
             current_frame_id = self.frames.get(fid.0).and_then(|frame| frame.parent);
         }
 
+        available_definitions.sort_by_key(|def| def.id.as_str());
+    
+        // Order by id and remove consecutive duplicates
+        available_definitions.dedup_by_key(|def| &def.id);
         available_definitions.sort_by_key(|def| def.location.range.start);
-        available_definitions
+        
+        available_definitions.iter().map(|def| (*def).clone()).collect()
     }
 }
 
