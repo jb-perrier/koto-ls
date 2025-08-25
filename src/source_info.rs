@@ -1102,7 +1102,7 @@ impl<'i> SourceInfoBuilder<'i> {
     }
 
     fn current_frame_id(&self) -> FrameId {
-        // Should never be empty, keep the expect
+        // The frame stack should never be empty
         self.frame_stack
             .last()
             .copied()
