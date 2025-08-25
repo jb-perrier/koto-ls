@@ -438,7 +438,7 @@ impl<'i> SourceInfoBuilder<'i> {
                 let ordering = cmp_range_to_range(&definition.location.range, location.range);
                 if definition.frame_id == fid
                     && definition.id.as_str() == id
-                    && (ordering == Ordering::Equal || ordering == Ordering::Less)
+                    && ordering != Ordering::Greater
                 {
                     return Some((DefinitionId(index), definition));
                 }
