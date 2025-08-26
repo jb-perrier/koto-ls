@@ -38,11 +38,13 @@ impl Error {
 pub struct SourceInfo {
     // The source file's contents
     source: String,
-    // A vec of all definitions, sorted by start position
+    // A vec of all definitions
     pub definitions: Vec<Definition>,
+    // All definition IDs, sorted by start position
     pub definitions_by_range: Vec<(Range, DefinitionId)>,
-    // A vec of all references, sorted by start position
+    // A vec of all references
     pub references: Vec<Reference>,
+    // All reference IDs, sorted by start position
     pub references_by_range: Vec<(Range, ReferenceId)>,
     /// A vec of all frames, sorted by start position
     pub frames: Vec<Frame>,
