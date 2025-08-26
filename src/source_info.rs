@@ -152,11 +152,12 @@ impl SourceInfo {
 
         // Find the innermost frame that contains this location
         let mut innermost_frame_id = None;
-        for (frame_id, frame) in self.frames.iter().enumerate() {
+        for (frame_id, frame) in self.frames.iter().enumerate().rev() {
             if frame.location.range.start <= location.range.start
                 && frame.location.range.end >= location.range.end
             {
                 innermost_frame_id = Some(FrameId(frame_id));
+                break;
             }
         }
 
