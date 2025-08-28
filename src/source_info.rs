@@ -173,10 +173,11 @@ impl SourceInfo {
                         // Remove definition that are later in the scope
                         && cmp_range_to_position(&definition.location.range, location.range.start)
                             != Ordering::Greater
-                        && !names.contains(definition.id.as_str()) {
-                            available_definitions.push(definition);
-                            names.insert(definition.id.as_str());
-                        }
+                        && !names.contains(definition.id.as_str())
+                    {
+                        available_definitions.push(definition);
+                        names.insert(definition.id.as_str());
+                    }
                 }
             }
             current_frame_id = self.frames.get(fid.0).and_then(|frame| frame.parent);
@@ -434,8 +435,7 @@ impl<'i> SourceInfoBuilder<'i> {
         let mut current_frame_id = Some(frame_id);
         while let Some(fid) = current_frame_id {
             // Search definitions in the current scope
-            for (index, definition) in self.definitions.iter().enumerate().rev()
-            {
+            for (index, definition) in self.definitions.iter().enumerate().rev() {
                 let ordering = cmp_range_to_range(&definition.location.range, location.range);
                 if definition.frame_id == fid
                     && definition.id.as_str() == id
@@ -841,7 +841,10 @@ impl<'i> SourceInfoBuilder<'i> {
                                 );
                             } else {
                                 // If there's no alias, just import the definition so we can see it in autocompletion
-                                self.add_imported_definition(*ctx.span(item_node), definition.clone());
+                                self.add_imported_definition(
+                                    *ctx.span(item_node),
+                                    definition.clone(),
+                                );
                             }
                             continue;
                         }
@@ -1828,7 +1831,13 @@ x =
         use super::*;
 
         fn assert_completions(completions: &[&Definition], expected: &[&str]) {
-            assert_eq!(completions.len(), expected.len(), "Completion count mismatch, expected: {}, found: {}", expected.len(), completions.len());
+            assert_eq!(
+                completions.len(),
+                expected.len(),
+                "Completion count mismatch, expected: {}, found: {}",
+                expected.len(),
+                completions.len()
+            );
             let names: Vec<String> = completions
                 .iter()
                 .map(|d| d.id.as_str().to_string())
@@ -1894,15 +1903,7 @@ v_f = |v_x|
             let location = location_at_position(test_uri(), 5, 36);
             let completions = info.get_available_definitions_at_location(location);
 
-            let expected = [
-                "v_outer",
-                "v_f",
-                "v_x",
-                "v_inner",
-                "v_g",
-                "v_y",
-                "v_nested",
-            ];
+            let expected = ["v_outer", "v_f", "v_x", "v_inner", "v_g", "v_y", "v_nested"];
             assert_completions(&completions, &expected);
         }
 
@@ -1924,7 +1925,13 @@ v_g = |v_other_param|
             let location = location_at_position(test_uri(), 6, 34);
             let completions = info.get_available_definitions_at_location(location);
 
-            let expected = ["v_global_var", "v_f", "v_g", "v_other_param", "v_other_local"];
+            let expected = [
+                "v_global_var",
+                "v_f",
+                "v_g",
+                "v_other_param",
+                "v_other_local",
+            ];
             assert_completions(&completions, &expected);
         }
 
