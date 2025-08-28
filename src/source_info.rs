@@ -168,7 +168,7 @@ impl SourceInfo {
         let mut current_frame_id = innermost_frame_id;
         while let Some(fid) = current_frame_id {
             if let Some(frame) = self.frames.get(fid.0) {
-                for def_id in &frame.definitions {
+                for def_id in frame.definitions.iter().rev() {
                     if let Some(definition) = self.definitions.get(def_id.0)
                         // Remove definition that are later in the scope
                         && cmp_range_to_position(&definition.location.range, location.range.start)
