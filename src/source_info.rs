@@ -3,7 +3,7 @@ use koto_parser::{
     Ast, AstIndex, AstNode, AstString, ChainNode, ConstantIndex, ImportItem, Node, Parser, Span,
     StringContents, StringNode, StringSlice,
 };
-use std::{cmp::Ordering, fs, sync::Arc};
+use std::{cmp::Ordering, collections::HashSet, fs, sync::Arc};
 use thiserror::Error;
 use tower_lsp_server::{
     UriExt,
@@ -150,6 +150,7 @@ impl SourceInfo {
     }
 
     pub fn get_available_definitions_at_location(&self, location: Location) -> Vec<&Definition> {
+        let mut names = HashSet::new();
         let mut available_definitions = Vec::new();
 
         // Find the innermost frame that contains this location
@@ -172,20 +173,14 @@ impl SourceInfo {
                         // Remove definition that are later in the scope
                         && cmp_range_to_position(&definition.location.range, location.range.start)
                             != Ordering::Greater
-                    {
-                        available_definitions.push(definition);
-                    }
+                        && !names.contains(definition.id.as_str()) {
+                            available_definitions.push(definition);
+                            names.insert(definition.id.as_str());
+                        }
                 }
             }
             current_frame_id = self.frames.get(fid.0).and_then(|frame| frame.parent);
         }
-
-        // Order by name
-        // Reverse to get the latest definition first in groups of items that are equal
-        // Then remove duplicates
-        available_definitions.sort_by_key(|def| def.id.as_str());
-        available_definitions.reverse();
-        available_definitions.dedup_by_key(|def| &def.id);
 
         available_definitions.sort_by_key(|def| def.location.range.start);
         available_definitions
@@ -1832,138 +1827,123 @@ x =
     mod completions {
         use super::*;
 
+        fn assert_completions(completions: &[&Definition], expected: &[&str]) {
+            assert_eq!(completions.len(), expected.len(), "Completion count mismatch, expected: {}, found: {}", expected.len(), completions.len());
+            let names: Vec<String> = completions
+                .iter()
+                .map(|d| d.id.as_str().to_string())
+                .collect();
+            for i in 0..expected.len() {
+                assert_eq!(names[i], expected[i]);
+            }
+        }
+
         #[test]
         fn simple_variables() {
             let script = "\
-x = 42
-y = \"hello\"
-z = true
-x + 
+v_x = 42
+v_y = \"hello\"
+v_z = true
+v_x + v
 ";
 
             let mut info_cache = InfoCache::default();
             let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
 
-            let location = location_at_position(test_uri(), 3, 3); // After "x + "
+            let location = location_at_position(test_uri(), 3, 7);
             let completions = info.get_available_definitions_at_location(location);
 
             assert_eq!(completions.len(), 3);
 
-            let names: Vec<String> = completions
-                .iter()
-                .map(|d| d.id.as_str().to_string())
-                .collect();
-            assert!(names.contains(&"x".to_string()));
-            assert!(names.contains(&"y".to_string()));
-            assert!(names.contains(&"z".to_string()));
+            let expected = ["v_x", "v_y", "v_z"];
+            assert_completions(&completions, &expected);
         }
 
         #[test]
         fn function_scope() {
             let script = "\
-x = 1
-foo = |a, b|
-  local_var = a + b
-  x + local_var + 
+v_x = 1
+v_foo = |v_a, v_b|
+  v_local_var = v_a + v_b
+  v_x + v_local_var + v
 ";
 
             let mut info_cache = InfoCache::default();
             let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
 
-            let location = location_at_position(test_uri(), 3, 16); // Before the end of the function
+            let location = location_at_position(test_uri(), 3, 22);
             let completions = info.get_available_definitions_at_location(location);
 
-            let names: Vec<String> = completions
-                .iter()
-                .map(|d| d.id.as_str().to_string())
-                .collect();
-            assert!(names.contains(&"x".to_string())); // global
-            assert!(names.contains(&"a".to_string())); // parameter
-            assert!(names.contains(&"b".to_string())); // parameter
-            assert!(names.contains(&"local_var".to_string())); // local variable
+            assert_completions(&completions, &["v_x", "v_foo", "v_a", "v_b", "v_local_var"]);
         }
 
         #[test]
         fn nested_scopes() {
             let script = "\
-outer = 1
-f = |x|
-  inner = 2
-  g = |y|
-    nested = 3
-    outer + inner + x + y + 
+v_outer = 1
+v_f = |v_x|
+  v_inner = 2
+  v_g = |v_y|
+    v_nested = 3
+    v_outer + v_inner + v_x + v_y + v
 ";
 
             let mut info_cache = InfoCache::default();
             let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
 
-            let location = location_at_position(test_uri(), 5, 26); // Before the end of the inner function
+            let location = location_at_position(test_uri(), 5, 36);
             let completions = info.get_available_definitions_at_location(location);
 
-            let names: Vec<String> = completions
-                .iter()
-                .map(|d| d.id.as_str().to_string())
-                .collect();
-            assert!(names.contains(&"outer".to_string())); // global
-            assert!(names.contains(&"x".to_string())); // outer function parameter
-            assert!(names.contains(&"inner".to_string())); // outer function local
-            assert!(names.contains(&"y".to_string())); // inner function parameter
-            assert!(names.contains(&"nested".to_string())); // current scope
+            let expected = [
+                "v_outer",
+                "v_f",
+                "v_x",
+                "v_inner",
+                "v_g",
+                "v_y",
+                "v_nested",
+            ];
+            assert_completions(&completions, &expected);
         }
 
         #[test]
         fn excludes_out_of_scope() {
             let script = "\
-global_var = 1
-f = |param|
-  local_var = 2
-  local_var + param
-g = |other_param|
-  other_local = 3
-  global_var + other_local
+v_global_var = 1
+v_f = |v_param|
+  v_local_var = 2
+  v_local_var + v_param
+v_g = |v_other_param|
+  v_other_local = 3
+  v_global_var + v_other_local + v
 ";
 
             let mut info_cache = InfoCache::default();
             let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
 
-            // Look for a position inside the second function where other_local would be defined
-            let location = location_at_position(test_uri(), 6, 15); // After "other_local"
+            let location = location_at_position(test_uri(), 6, 34);
             let completions = info.get_available_definitions_at_location(location);
 
-            let names: Vec<String> = completions
-                .iter()
-                .map(|d| d.id.as_str().to_string())
-                .collect();
-
-            // Should have access to globals and current function scope
-            assert!(names.contains(&"global_var".to_string()));
-
-            // Should NOT have access to:
-            assert!(!names.contains(&"param".to_string())); // from different function
-            assert!(!names.contains(&"local_var".to_string())); // from different function
+            let expected = ["v_global_var", "v_f", "v_g", "v_other_param", "v_other_local"];
+            assert_completions(&completions, &expected);
         }
 
         #[test]
         fn top_level() {
             let script = "\
-x = 1
-y = 2
-f = |a| a * 2
+v_x = 1
+v_y = 2
+v_f = |v_a| v_a * 2
 ";
 
             let mut info_cache = InfoCache::default();
             let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
 
-            let location = location_at_position(test_uri(), 3, 0); // Start of line 4
+            let location = location_at_position(test_uri(), 3, 0);
             let completions = info.get_available_definitions_at_location(location);
 
-            let names: Vec<String> = completions
-                .iter()
-                .map(|d| d.id.as_str().to_string())
-                .collect();
-            assert!(names.contains(&"x".to_string()));
-            assert!(names.contains(&"y".to_string()));
-            assert!(names.contains(&"f".to_string()));
+            let expected = ["v_x", "v_y", "v_f"];
+            assert_completions(&completions, &expected);
         }
 
         #[test]
@@ -1982,32 +1962,27 @@ f = |a| a * 2
         #[test]
         fn variable_shadowing() {
             let script = "\
-x = \"global\"
-f = |x|
-  x = x.upper()
-  x + 
+v_x = \"global\"
+v_f = |v_x|
+  v_x = 56
+  v_x + v
 ";
 
             let mut info_cache = InfoCache::default();
             let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
 
-            let location = location_at_position(test_uri(), 3, 5); // After "x + "
+            let location = location_at_position(test_uri(), 3, 9);
             let completions = info.get_available_definitions_at_location(location);
 
-            let names: Vec<String> = completions
-                .iter()
-                .map(|d| d.id.as_str().to_string())
-                .collect();
+            let expected = ["v_f", "v_x"];
+            assert_completions(&completions, &expected);
 
-            // Should contain x (the redefined local one)
-            assert!(names.contains(&"x".to_string()));
-
-            // Verify we get the local definitions
-            let x_definitions: Vec<_> = completions
+            let v_x_definition = completions
                 .iter()
-                .filter(|d| d.id.as_str() == "x")
-                .collect();
-            assert!(!x_definitions.is_empty());
+                .find(|d| d.id.as_str() == "v_x")
+                .expect("v_x definition not found");
+
+            assert_eq!(v_x_definition.frame_id, FrameId(1));
         }
 
         #[test]
