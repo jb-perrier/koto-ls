@@ -1983,6 +1983,7 @@ v_f = |v_x|
                 .expect("v_x definition not found");
 
             assert_eq!(v_x_definition.frame_id, FrameId(1));
+            assert_eq!(v_x_definition.kind, SymbolKind::NUMBER);
         }
 
         #[test]
