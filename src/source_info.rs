@@ -1988,25 +1988,20 @@ v_f = |v_x|
         #[test]
         fn imports() {
             let script = "\
-import foo
-from bar import baz
-local_var = 1
-foo + baz +
+import v_foo
+from v_bar import v_baz
+v_local_var = 1
+v_foo + v_baz + v
 ";
 
             let mut info_cache = InfoCache::default();
             let info = SourceInfo::new(script.to_string(), test_uri(), &mut info_cache);
 
-            let location = location_at_position(test_uri(), 3, 11); // After "foo + baz + "
+            let location = location_at_position(test_uri(), 3, 17);
             let completions = info.get_available_definitions_at_location(location);
 
-            let names: Vec<String> = completions
-                .iter()
-                .map(|d| d.id.as_str().to_string())
-                .collect();
-            assert!(names.contains(&"foo".to_string()));
-            assert!(names.contains(&"baz".to_string()));
-            assert!(names.contains(&"local_var".to_string()));
+            let expected = ["v_foo", "v_baz", "v_local_var"];
+            assert_completions(&completions, &expected);
         }
     }
 }
